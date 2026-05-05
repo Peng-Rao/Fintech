@@ -1,0 +1,287 @@
+% !TEX program = pdflatex
+\documentclass[10pt, aspectratio=169]{beamer}
+
+\usetheme{metropolis}
+\usepackage{amsmath, amssymb, amsthm}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{xcolor}
+\usepackage{tikz}
+\usetikzlibrary{positioning, arrows.meta, shapes.geometric, fit}
+\usepackage{listings}
+
+\definecolor{accent}{RGB}{30, 90, 160}
+\setbeamercolor{frametitle}{bg=accent, fg=white}
+
+\lstset{
+  basicstyle=\ttfamily\scriptsize,
+  keywordstyle=\color{accent}\bfseries,
+  commentstyle=\color{gray}\itshape,
+  stringstyle=\color{teal},
+  breaklines=true,
+  showstringspaces=false,
+  language=Python,
+}
+
+\title{Cracking the Black Box}
+\subtitle{M5 --- Deep Learning Weight Generator \& Final Synthesis}
+\author{Member 5 --- Portfolio Replica Track}
+\institute{PoliMI Fintech --- Business Case 3}
+\date{}
+
+\begin{document}
+
+\maketitle
+
+% =============================================================
+\begin{frame}{Where M5 sits in BC3}
+\textbf{Problem.} Replicate a hidden ``Monster Index''
+\[
+r^{\text{target}}_t = 0.50\,r^{\text{HFRX}}_t + 0.25\,r^{\text{MSCI World}}_t + 0.25\,r^{\text{Global Bond}}_t
+\]
+using only 11 liquid Bloomberg futures (rates, equity, FX, commodity), subject to a Gaussian VaR cap of $8\%$ (1\%, 1-month).
+
+\medskip
+\textbf{The five tracks.}
+\begin{itemize}
+  \item M1 --- Harness + transaction costs
+  \item M2 --- Classical linear bench (OLS / Ridge / Lasso / Huber)
+  \item M3 --- Rebalancing \& constraints
+  \item M4 --- Kalman filter / state-space
+  \item \alert{M5 --- Deep learning weight generator + final synthesis}
+\end{itemize}
+
+\medskip
+\textbf{Baseline to beat.} Elastic Net rolling backtest: $\rho \approx 0.72$, $\mathrm{IR} \approx -0.26$, average gross exposure $\approx 0.22$, average VaR $\approx 2.1\%$.
+\end{frame}
+
+% =============================================================
+\begin{frame}{The M5 contract}
+\textbf{End-to-end weight generator.} The network outputs the \emph{weights}, not the returns:
+\[
+w_t = f_\theta(\phi_t), \qquad r^{\text{replica}}_t = w_t^{\top}\, r_t.
+\]
+\textbf{Cross-track contract} (TODO.md):
+\begin{itemize}
+  \item \textbf{Inputs:} $X = $ 11 futures weekly returns; $y = $ Monster Index weekly return.
+  \item \textbf{Outputs:} \texttt{weights\_history} $\in \mathbb{R}^{T\times 11}$, \texttt{replica\_returns} $\in \mathbb{R}^{T}$.
+  \item \textbf{Metrics:} $\{\mathrm{IR}, \mathrm{TE}, \rho, \overline{\mathrm{GE}}, \mathrm{VaR}, \bar T, \mathrm{net\_IR}, \mathrm{net\_TE}\}$.
+  \item \textbf{Persistence:} every member commits \texttt{results/<track>.pkl}; M5 loads them into the master table.
+\end{itemize}
+\textbf{M5 deliverables:} feature engineering, MLP, training loop, rolling backtest, PCA / attention variants, consolidated comparison, slides.
+\end{frame}
+
+% =============================================================
+\begin{frame}{Feature engineering --- $\phi_t$}
+$\phi_t$ is built from \emph{lagged} information only (\texttt{phi.shift(1)}) so the network never sees the contemporaneous return it is asked to weight.
+
+\begin{columns}[T]
+\begin{column}{0.55\textwidth}
+\textbf{Components.}
+\begin{itemize}
+  \item Trailing compounded returns at $k \in \{4, 12, 52\}$ weeks.
+  \item Trailing realised volatility at $k \in \{12, 52\}$ weeks (annualised $\times \sqrt{52}$).
+  \item Regime indicators: 12-week MSCI World return, 12-week bond trend, 12-week target volatility.
+  \item Warm start: previous Ridge/EN weight $w^{\text{EN}}_{t-1}$ from a 52-week trailing fit ($\alpha = 10^{-3}$).
+\end{itemize}
+\end{column}
+\begin{column}{0.45\textwidth}
+\textbf{Compounded return:}
+\[
+r^{(k)}_t = \prod_{s=t-k+1}^{t}(1 + r_s) - 1
+\]
+\textbf{Standardisation.} Train-fold $\mu, \sigma$ only --- the network never sees val/test statistics.
+\medskip
+
+\textbf{Why a warm start?} Inject prior structural knowledge from the EN baseline; the MLP only has to learn the residual correction.
+\end{column}
+\end{columns}
+\end{frame}
+
+% =============================================================
+\begin{frame}[fragile]{MLP architecture --- \texttt{WeightMLP}}
+\[
+\phi_t \in \mathbb{R}^{d_\phi} \;\to\; 64 \;\to\; 32 \;\to\; w_t \in \mathbb{R}^{11}
+\]
+No softmax: long/short positions allowed. Optional \emph{gross-exposure cap} stands in for the M3.2 / VaR feasibility projection.
+
+\begin{lstlisting}
+class WeightMLP(nn.Module):
+    def forward(self, phi):
+        w = self.net(phi)               # Linear -> ReLU -> Dropout -> Linear ...
+        if self.gross_cap is not None:
+            ge    = w.abs().sum(-1, keepdim=True).clamp(min=1e-8)
+            scale = torch.minimum(torch.ones_like(ge), self.gross_cap / ge)
+            w = w * scale               # project onto {w : sum |w_j| <= L}
+        return w
+\end{lstlisting}
+
+\textbf{VaR projection (post-fit).} If $\mathrm{VaR}(\hat w_t) > 0.08$, rescale $w_t \mapsto w_t \cdot 0.08 / \mathrm{VaR}(\hat w_t)$ --- same rule as the EN pipeline.
+\end{frame}
+
+% =============================================================
+\begin{frame}{Loss --- tracking-error variance + turnover}
+\[
+\mathcal{L}(\theta) \;=\; \underbrace{\mathrm{Var}_{s \in [t,\, t+H-1]}\!\bigl(w_t^{\top} r_s - y_s\bigr)}_{\text{TE volatility on the forward }H\text{-week window}}
+\;+\; \lambda \,\bigl\lVert \Delta w_t \bigr\rVert_1, \qquad H = 12
+\]
+\begin{itemize}
+  \item For each rebalance date $t$, weights $w_t$ are scored on the realised \emph{forward} window $[t, t+H-1]$.
+  \item $\lambda \in \{0,\, 10^{-3},\, 10^{-2}\}$ ablates the turnover penalty.
+  \item Sequential mini-batches preserve adjacency so $\lVert \Delta w_t \rVert_1$ between consecutive rows is meaningful.
+\end{itemize}
+
+\textbf{Why variance, not MSE?} A constant tracking bias is harmless once VaR-rescaled --- what hurts is \emph{volatility} of the tracking error. Minimising the variance directly targets the IR denominator.
+\end{frame}
+
+% =============================================================
+\begin{frame}{Training regime --- temporal split + early stopping}
+\textbf{60 / 20 / 20 chronological split.} No shuffling across the boundary --- weekly financial data is non-stationary, leakage destroys the metric.
+\medskip
+
+\begin{columns}[T]
+\begin{column}{0.55\textwidth}
+\textbf{Optimiser \& schedule.}
+\begin{itemize}
+  \item Adam, lr $= 10^{-3}$, weight decay $10^{-5}$.
+  \item Batch size $64$, max $500$ epochs, patience $30$.
+  \item Early stopping watches \emph{annualised validation TE} ---
+        \[
+        \mathrm{TE}^{\mathrm{ann}} = \sqrt{52 \cdot \mathrm{Var}(r^{\text{replica}}_t - y_t)}.
+        \]
+\end{itemize}
+\end{column}
+\begin{column}{0.45\textwidth}
+\textbf{Reproducibility.}
+\begin{itemize}
+  \item \texttt{seed = 42} for NumPy + PyTorch.
+  \item Train-fold $\mu, \sigma$ frozen before val/test eval.
+  \item Deterministic device fallback: CUDA if available, else CPU.
+\end{itemize}
+\medskip
+
+\textbf{Why 60/20/20?} Big enough validation tail to early-stop reliably while still leaving an out-of-sample test window the optimiser never touches.
+\end{column}
+\end{columns}
+\end{frame}
+
+% =============================================================
+\begin{frame}{Rolling out-of-sample backtest}
+The single 60/20/20 split confirms the network \emph{can} fit. The cross-track contract requires a true rolling backtest.
+
+\medskip
+\textbf{\texttt{run\_nn\_rolling\_backtest} mirrors M1's harness:}
+\begin{itemize}
+  \item Retrain on the trailing \texttt{train\_window} $= 156$ weekly samples.
+  \item Predict $w_t = f_\theta(\phi_t)$ at every rebalance date.
+  \item Hold weights between rebalances when $\Delta t > 1$.
+  \item Apply the Gaussian VaR projection $\mathrm{VaR}(\hat w_t) \le 0.08$.
+  \item Warm-start the next fit from the previous state dict --- crucial for the weekly cadence.
+\end{itemize}
+
+\medskip
+\textbf{Cadences swept.} $\Delta t \in \{1, 4\}$ weeks. Same training window, loss, and VaR projection --- only the retrain frequency differs.
+\end{frame}
+
+% =============================================================
+\begin{frame}{Variants --- PCA-compressed features}
+Replace the flat $\{4, 12, 52\}$-week trailing-return block with the top-$k$ principal-component scores of the trailing 52-week futures-return matrix.
+\medskip
+
+\begin{itemize}
+  \item PCA is refit \emph{causally} inside the loop: at every $t \ge 52$, fit PCA on $X[t-52:t]$ and store the most recent score vector.
+  \item No future leakage; volatility, regime, and warm-start blocks unchanged.
+  \item Default $k = 5$ components.
+\end{itemize}
+
+\medskip
+\textbf{Why PCA?} The 11 futures are heavily correlated by sector (rates, equity, commodity). A small principal subspace captures most of the cross-sectional signal and reduces $d_\phi$ for a leaner MLP.
+\end{frame}
+
+% =============================================================
+\begin{frame}{Variants --- Transformer over the trailing 52w matrix}
+A small Transformer encoder attends across $\Phi_t \in \mathbb{R}^{52 \times 11}$ and emits $w_t \in \mathbb{R}^{11}$ from the final time-step's representation.
+
+\medskip
+\textbf{Architecture.}
+\begin{itemize}
+  \item Linear projection $11 \to d_{\text{model}} = 32$.
+  \item $2$ TransformerEncoder layers, $4$ heads, dropout $0.1$.
+  \item Linear head on the last token $\to$ $w_t$, then the same gross-exposure / VaR projection.
+\end{itemize}
+
+\medskip
+\textbf{Same harness.} Loss, VaR projection, rolling cadence, train-fold standardisation are all reused --- only the architecture and feature shape change. This isolates the architectural contribution.
+\end{frame}
+
+% =============================================================
+\begin{frame}{Final consolidated comparison --- master table}
+\textbf{Synthesis step.} Load each member's \texttt{results/<track>.pkl} and merge with the in-notebook NN variants.
+\medskip
+
+\begin{itemize}
+  \item Each pickle ships \texttt{weights\_history}, \texttt{replica\_returns}, \texttt{target\_returns}, \texttt{metrics}.
+  \item Missing metrics are recomputed from the series so the master table stays homogeneous.
+  \item Rows ranked by \texttt{net\_IR} --- the metric that matters once the M1 transaction-cost subtraction is applied.
+\end{itemize}
+
+\medskip
+\textbf{Reported columns:}
+\[
+\{\mathrm{IR},\; \mathrm{TE},\; \rho,\; \overline{\mathrm{GE}},\; \bar T,\; \mathrm{VaR},\; \mathrm{net\_IR},\; \mathrm{net\_TE},\; \mathrm{cost\_drag}\}
+\]
+
+\medskip
+\textbf{Spotlight plots} for the best variant: cumulative returns vs. target, rolling 26-week correlation, weights heatmap over time.
+\end{frame}
+
+% =============================================================
+\begin{frame}{Reading the leaderboard}
+\textbf{Diagnostics framework} for the consolidated comparison:
+\begin{itemize}
+  \item \textbf{Which model wins on IR?} Best joint signal selection + rebalance discipline.
+  \item \textbf{Which wins on turnover?} Predictors with strong shrinkage / state-space smoothing (Kalman, NN+turnover penalty).
+  \item \textbf{Where does the ranking flip when $\tau > \tau^{\star}$?} Heavy-turnover NN variants lose to Kalman / Ridge once costs bite.
+  \item \textbf{Stress windows} (2008-09 to 2009-06; 2020-02 to 2020-06): which configuration survives the crisis tail with the smallest TE / VaR breach?
+\end{itemize}
+
+\medskip
+\textbf{What the EN baseline tells us.} $\rho \approx 0.72$ at $\bar T \approx 0$ (long rolling window) --- a stable signal beats recent adaptation. The DL bar is therefore: \emph{lift correlation without exploding turnover}.
+\end{frame}
+
+% =============================================================
+\begin{frame}{Recommended configuration}
+\textbf{Architectural recipe (NN baseline).}
+\begin{itemize}
+  \item \texttt{WeightMLP} $\phi_t \to 64 \to 32 \to w_t$, dropout $0.1$, gross cap $L = 2.0$.
+  \item Features: $\{4, 12, 52\}$-week returns + $\{12, 52\}$-week vol + 3 regime + Ridge warm start.
+  \item Loss: forward-window TE variance + $\lambda = 10^{-3}$ turnover penalty.
+  \item Rebalance every $\Delta t = 4$ weeks --- the cheap default; $\Delta t = 1$ retrains weekly with warm start.
+  \item VaR projection $\mathrm{VaR}(\hat w_t) \le 0.08$, Gaussian 1\% / 1-month.
+  \item Transaction cost $\tau = 5$ bps per unit of $\bar T$.
+\end{itemize}
+
+\medskip
+\textbf{When to prefer each variant.}
+\begin{itemize}
+  \item \textbf{MLP + warm start:} default; cheapest; respects the EN prior.
+  \item \textbf{PCA features:} when the 11 futures are dominated by 2--3 factors and $d_\phi$ overfits.
+  \item \textbf{Transformer:} when the temporal structure of the 52w window matters and compute is plentiful.
+\end{itemize}
+\end{frame}
+
+% =============================================================
+\begin{frame}{Takeaways}
+\begin{itemize}
+  \item \textbf{The end-to-end framing matters.} Predicting weights, not returns, gives a single coherent loss (forward-window TE variance) and lets the VaR projection live inside the model.
+  \item \textbf{Warm-starting from EN} preserves the interpretable linear prior --- the network learns the residual, not the whole map.
+  \item \textbf{Turnover discipline is non-optional.} Without the $\lambda \lVert \Delta w_t \rVert_1$ term, NN variants over-trade and lose net IR to costs.
+  \item \textbf{Honest evaluation.} Causal feature construction (\texttt{shift(1)}, causal PCA, train-fold standardisation), 60/20/20 split, rolling retrain --- every step closed against look-ahead leakage.
+  \item \textbf{Cross-track synthesis.} The pickle contract makes M1--M4 directly comparable in one master table; the same metric set decides the recommended configuration.
+\end{itemize}
+
+\medskip
+\centering\Large \textbf{Thank you --- questions?}
+\end{frame}
+
+\end{document}
