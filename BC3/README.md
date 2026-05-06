@@ -124,18 +124,6 @@ BC3/
 └── Zenti_Business_Case_3.pdf              # original assignment brief
 ```
 
-### How to re-run the notebook
-
-```bash
-# from repo root; assumes the project uv/venv at .venv
-cd BC3
-../.venv/bin/jupyter nbconvert --to notebook --execute Portfolio_ReplicaPoliMIv2.ipynb --inplace
-```
-
-The loader prefers the local Excel file next to the notebook and falls back to the Colab Drive path only when the local file is missing.
-
-> Extra dependency: `statsmodels` (ACF/PACF, Ljung-Box). Install with `.venv/bin/python -m pip install statsmodels` if not already present.
-
 ---
 
 ## See Also
