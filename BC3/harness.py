@@ -17,7 +17,7 @@ import hashlib
 import json
 import pickle
 import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import (
     Any,
@@ -30,6 +30,7 @@ from typing import (
     Protocol,
     Tuple,
     Union,
+    cast,
 )
 
 import numpy as np
@@ -327,7 +328,7 @@ def market_stress_outlier_audit(
         if clean.empty:
             return ""
         idx = clean.idxmin() if func == "min" else clean.idxmax()
-        return pd.Timestamp(idx).date().isoformat()
+        return pd.Timestamp(str(idx)).date().isoformat()
 
     summary = pd.DataFrame(index=panel.columns)
     summary["observations"] = panel.count()
@@ -710,7 +711,8 @@ class ReplicaResult:
         new_name: Optional[str] = None,
     ) -> "ReplicaResult":
         """Return a cropped result for crisis-window evaluation."""
-        start, end = pd.Timestamp(start), pd.Timestamp(end)
+        start = cast(pd.Timestamp, pd.Timestamp(start))
+        end = cast(pd.Timestamp, pd.Timestamp(end))
         idx = self.replica_net.index[
             (self.replica_net.index >= start) & (self.replica_net.index <= end)
         ]
@@ -1020,13 +1022,13 @@ def run_rolling_backtest(
             period_turnover = float(np.sum(np.abs(dw)))
             period_exec_tc = tc_model(dw, w_current, w_new) if tc_model else 0.0
 
-            rb_dates.append(pd.Timestamp(date))
+            rb_dates.append(cast(pd.Timestamp, pd.Timestamp(date)))
             rb_weights.append(w_new.copy())
             rb_var.append(float(var_projected))
             rb_scaling.append(float(ge_scale * var_scale))
             trade_rows.extend(
                 _make_trade_rows(
-                    pd.Timestamp(date), X.columns, w_current, w_new, period_exec_tc
+                    cast(pd.Timestamp, pd.Timestamp(date)), X.columns, w_current, w_new, period_exec_tc
                 )
             )
 
@@ -1183,7 +1185,7 @@ def evaluate_weights(
             turnover[k] = float(np.sum(np.abs(dw)))
             exec_tc[k] = tc_model(dw, w_prev, w_now) if tc_model else 0.0
             trade_rows.extend(
-                _make_trade_rows(pd.Timestamp(d), X.columns, w_prev, w_now, exec_tc[k])
+                _make_trade_rows(cast(pd.Timestamp, pd.Timestamp(d)), X.columns, w_prev, w_now, exec_tc[k])
             )
             rb_weights.append(w_now.copy())
             w_prev = w_now
@@ -1350,7 +1352,7 @@ def build_optimizer_weights(
             cfg.var_conf,
             cfg.var_horizon_w,
         )
-        dates.append(pd.Timestamp(X.index[t]))
+        dates.append(cast(pd.Timestamp, pd.Timestamp(X.index[t])))
         weights.append(w_new.copy())
         w_current = w_new.copy()
 
@@ -1771,7 +1773,7 @@ def cost_sensitivity_sweep(
     rows = []
     base_cfg = config or HarnessConfig()
     for label, tc in tc_models.items():
-        cfg = HarnessConfig(**{**asdict(base_cfg), "name": f"{base_cfg.name}__{label}"})
+        cfg = replace(base_cfg, name=f"{base_cfg.name}__{label}")
         res = run_rolling_backtest(X, y, model_factory, config=cfg, tc_model=tc)
         rows.append({"scenario": label, **res.metrics})
     df = pd.DataFrame(rows).set_index("scenario")
