@@ -1,4 +1,4 @@
-"""Predict-then-Optimize layer for the M2 linear benchmark.
+"""Predict-then-Optimize layer for the linear-benchmark track.
 
 Four phases:
     1. Alpha:    classical linear model on (X_tr, y_tr) -> coef_ as mu
@@ -46,6 +46,7 @@ class POConfig:
     w_cap: float = 0.5                  # per-asset cap: |w_j| <= w_cap
     use_lw_shrinkage: bool = True       # Ledoit-Wolf shrinkage on Sigma
     top_k: Optional[int] = None         # optional |corr(r_j, y)| pre-selection
+    long_only: bool = False             # long-only: w >= 0 (no shorts)
     solver: str = "CLARABEL"            # CVXPY solver; SCS fallback on failure
 
 
@@ -95,9 +96,11 @@ def solve_po(
     ge_cap: float,
     w_cap: float,
     solver: str = "CLARABEL",
+    long_only: bool = False,
 ) -> np.ndarray:
     """Phase 3: convex max mu'w - 0.5*lambda*w'Sigma w - tau*||w-w_prev||_1
-    s.t. ||w||_1 <= ge_cap, |w_j| <= w_cap. Falls back to SCS, then to w_prev on failure.
+    s.t. ||w||_1 <= ge_cap, |w_j| <= w_cap. With long_only=True, additionally enforces w >= 0
+    (long-only variant). Falls back to SCS, then to w_prev on failure.
     """
     n = mu.size
     w = cp.Variable(n)
@@ -108,6 +111,8 @@ def solve_po(
         - tau * cp.norm1(w - w_prev)
     )
     constraints = [cp.norm1(w) <= ge_cap, cp.abs(w) <= w_cap]
+    if long_only:
+        constraints.append(w >= 0)
     prob = cp.Problem(objective, constraints)
     for s in (solver, "SCS"):
         try:
@@ -141,7 +146,7 @@ def run_predict_then_optimize_backtest(
     po_config: POConfig,
     name: str,
 ) -> ReplicaResult:
-    """Predict-then-Optimize rolling backtest plugged into the M1 harness.
+    """Predict-then-Optimize rolling backtest plugged into the harness.
 
     Walks the same (rolling_window, rebalance_every) grid as run_rolling_backtest, but at each
     rebalance: (1) trains the alpha factory to get mu, (2) builds shrunken Sigma, (3) solves the
@@ -184,6 +189,7 @@ def run_predict_then_optimize_backtest(
             ge_cap=po_config.ge_cap,
             w_cap=po_config.w_cap,
             solver=po_config.solver,
+            long_only=po_config.long_only,
         )
         w_full = np.zeros(n_feat)
         w_full[active] = w_a

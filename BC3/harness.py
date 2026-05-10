@@ -1921,6 +1921,80 @@ def export_result_artifacts(
     return paths
 
 
+PERCENT_METRIC_COLS: Tuple[str, ...] = (
+    "TE", "net_TE", "VaR", "max_VaR",
+    "max_drawdown", "max_drawdown_net",
+    "cost_drag", "ann_ret", "ann_ret_net",
+)
+RATIO_METRIC_COLS: Tuple[str, ...] = (
+    "IR", "net_IR", "rho", "beta_to_target",
+)
+MULTIPLE_METRIC_COLS: Tuple[str, ...] = (
+    "GE", "GE_mean", "max_GE", "annual_turnover", "weekly_turnover", "turnover",
+)
+BPS_METRIC_COLS: Tuple[str, ...] = ("tc_total_bps",)
+
+
+def metrics_row_from_replica(
+    label: str,
+    res: "ReplicaResult",
+    **extra: Any,
+) -> Dict[str, Any]:
+    """Compact metrics dict for leaderboard tables; shared across all model tracks.
+
+    Standard columns: model | IR | TE | rho | GE_mean | max_GE | VaR | max_VaR |
+    annual_turnover | tc_total_bps | net_IR | net_TE. Extra keyword args are appended
+    as-is so callers can tag rows with hyper-parameters (sigma_w, alpha, cadence, ...).
+    """
+    m = res.metrics
+    return {
+        "model": label,
+        "IR": m["IR"], "TE": m["TE"], "rho": m["rho"],
+        "GE_mean": m["GE"], "max_GE": m["max_GE"],
+        "VaR": m["VaR"], "max_VaR": m["max_VaR"],
+        "annual_turnover": m["annual_turnover"],
+        "tc_total_bps": m["tc_total_bps"],
+        "net_IR": m["net_IR"], "net_TE": m["net_TE"],
+        **extra,
+    }
+
+
+def format_metrics_dataframe(
+    df: pd.DataFrame,
+    *,
+    percent_cols: Iterable[str] = PERCENT_METRIC_COLS,
+    ratio_cols: Iterable[str] = RATIO_METRIC_COLS,
+    multiple_cols: Iterable[str] = MULTIPLE_METRIC_COLS,
+    bps_cols: Iterable[str] = BPS_METRIC_COLS,
+):
+    """Apply a consistent display formatting to a metrics DataFrame and return a Styler.
+
+    - Columns in `percent_cols` are rendered as `12.34%` (units of NAV).
+    - Columns in `ratio_cols` are rendered as `+0.523` (signed dimensionless).
+    - Columns in `multiple_cols` are rendered as `2.00` (× NAV multiples).
+    - Columns in `bps_cols` are rendered as `337.4 bps` (basis points).
+    - Anything else uses pandas defaults.
+
+    The underlying DataFrame is left untouched (numeric, sortable). This helper is
+    the single source of truth for metric presentation across all track tables.
+    """
+    fmt: Dict[str, Callable[[Any], str]] = {}
+    pct_set = set(percent_cols)
+    ratio_set = set(ratio_cols)
+    multiple_set = set(multiple_cols)
+    bps_set = set(bps_cols)
+    for col in df.columns:
+        if col in pct_set:
+            fmt[col] = "{:.2%}".format
+        elif col in ratio_set:
+            fmt[col] = "{:+.3f}".format
+        elif col in multiple_set:
+            fmt[col] = "{:.2f}".format
+        elif col in bps_set:
+            fmt[col] = "{:.1f} bps".format
+    return df.style.format(fmt)
+
+
 __all__ = [
     "ANNUAL_FACTOR",
     "DEFAULT_GE_CAP",
@@ -1957,11 +2031,17 @@ __all__ = [
     "information_ratio",
     "load_bloomberg_weekly",
     "load_result",
+    "format_metrics_dataframe",
     "make_beta_scaled_single_future_weights",
     "make_static_ols_weights",
     "market_stress_outlier_audit",
     "max_drawdown",
     "metrics_from_returns",
+    "metrics_row_from_replica",
+    "BPS_METRIC_COLS",
+    "MULTIPLE_METRIC_COLS",
+    "PERCENT_METRIC_COLS",
+    "RATIO_METRIC_COLS",
     "risk_audit_table",
     "rolling_diagnostics",
     "rolling_risk_dashboard",

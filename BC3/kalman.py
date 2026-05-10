@@ -1,4 +1,4 @@
-"""Kalman / state-space layer (M4).
+"""Kalman / state-space layer.
 
 Linear KF with random-walk weights as the latent state and the scalar target return
 as the observation. Includes:
@@ -24,7 +24,12 @@ from harness import (
     ReplicaResult,
     evaluate_weights,
     gaussian_var,
+    metrics_row_from_replica,
 )
+
+# Back-compat alias: kf_metrics_row was the Kalman-specific name; the canonical helper now
+# lives in harness.metrics_row_from_replica and is shared by every track.
+kf_metrics_row = metrics_row_from_replica
 
 __all__ = [
     "KalmanConfig",
@@ -205,16 +210,4 @@ def fit_hmm_regime(
     return regime, hmm_model.means_.ravel(), stress_state
 
 
-def kf_metrics_row(label: str, res: ReplicaResult, **extra) -> dict:
-    """Compact metrics dict for leaderboard tables."""
-    m = res.metrics
-    return {
-        "model": label,
-        "IR": m["IR"], "TE": m["TE"], "rho": m["rho"],
-        "GE_mean": m["GE"], "max_GE": m["max_GE"],
-        "VaR": m["VaR"], "max_VaR": m["max_VaR"],
-        "annual_turnover": m["annual_turnover"],
-        "tc_total_bps": m["tc_total_bps"],
-        "net_IR": m["net_IR"], "net_TE": m["net_TE"],
-        **extra,
-    }
+# kf_metrics_row alias is defined at the top of the module (re-export of harness helper).
