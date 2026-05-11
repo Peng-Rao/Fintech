@@ -1,14 +1,16 @@
-"""Deep-learning pipeline for the NN weight generator.
+"""Deep-learning weight generator (notebook Part VI).
 
 Splits naturally into five layers:
     1. Feature engineering — build_features (vanilla) and build_features_pca (PCA variant).
+       Both are leakage-safe: rolling-window PCA, trailing-window Ridge warm-start, and
+       a final .shift(1) on the full feature frame.
     2. Models                — WeightMLP and WeightTransformer.
     3. Loss & windowing      — make_supervised_windows, te_mse_loss, turnover_penalty,
                                annualized_te_from_weights, _drift_weights, project_var_cap,
                                make_attention_windows.
     4. Trainer               — TrainConfig + train_weight_mlp (chronological split, early stop).
     5. Rolling backtest      — compute_metrics + run_nn_rolling_backtest +
-                               run_attn_rolling_backtest (training / extended-feature entry points).
+                               run_attn_rolling_backtest.
 
 Functions infer the active torch device from `next(model.parameters()).device`, so the module
 has no global `device` dependency — drop the model on whatever device you like and pass it in.

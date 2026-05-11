@@ -1,4 +1,4 @@
-"""Predict-then-Optimize layer for the linear-benchmark track.
+"""Predict-then-Optimize layer (notebook Part IV: Linear Benchmark Family).
 
 Four phases:
     1. Alpha:    classical linear model on (X_tr, y_tr) -> coef_ as mu
@@ -7,7 +7,7 @@ Four phases:
                  s.t. ||w||_1 <= ge_cap, |w_j| <= w_cap   (CVXPY)
     4. Audit:    rebalance-date weights -> evaluate_weights(...) for cost / VaR / GE accounting
 
-Wire-up: every alpha factory must accept (X_tr, y_tr) at .fit() and expose .coef_, the
+Every alpha factory must accept (X_tr, y_tr) at .fit() and expose .coef_, the
 sklearn convention. OLS, Ridge, Lasso, ElasticNet and HuberRegressor all conform.
 """
 from __future__ import annotations

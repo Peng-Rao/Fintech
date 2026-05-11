@@ -1,4 +1,4 @@
-"""Kalman / state-space layer.
+"""Kalman / state-space layer (notebook Part V).
 
 Linear KF with random-walk weights as the latent state and the scalar target return
 as the observation. Includes:
@@ -6,7 +6,8 @@ as the observation. Includes:
     - Ridge-fit initialisation `_kalman_init`
     - notebook-friendly wrapper `run_kalman_replica` that returns a ReplicaResult
     - pykalman EM helper (`fit_em_noise`)
-    - hmmlearn 2-state HMM regime classifier (`fit_hmm_regime`)
+    - hmmlearn 2-state HMM regime classifier (`fit_hmm_regime`) — accepts `fit_until`
+      so the HMM can be frozen on the warm-up window (no look-ahead)
     - metrics-row helper (`kf_metrics_row`) for leaderboard tables
 """
 from __future__ import annotations
