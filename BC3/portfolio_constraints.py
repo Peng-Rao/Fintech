@@ -1,15 +1,15 @@
 """Rebalancing & portfolio constraints (extended track).
 
-Standalone Elastic-Net rolling backtest with:
-    - per-rebalance gross-exposure cap projection (`apply_gross_exposure_cap`)
-    - per-rebalance Gaussian / historical VaR cap projection (`apply_var_cap`)
-    - crisis-window evaluation (`evaluate_crisis_window`)
+Thin wrapper around harness primitives. Provides:
+    - notebook-stable public aliases for VaR / GE helpers (so old call sites compile)
+    - constraint-aware rolling backtest that plugs ElasticNet into harness.run_rolling_backtest
+      with a GE + iterative-VaR projection between fit and ``evaluate_weights``
+    - crisis-window evaluator
     - 2D scenario grid (`build_scenario_grid` + `run_scenario_search`)
     - composite-score scenario selector (`select_best_scenarios`)
 
-Adapted from the team-member's `M3_Rebalancing_PortfolioConstraints_extended.ipynb`.
-Logic is preserved as-is so results match the standalone notebook; main.ipynb just supplies
-the `(X, y)` panel produced by Part I.
+All metric / VaR / GE primitives are re-exported from ``harness`` so there is exactly one
+implementation per concept. This module owns only the track-specific orchestration logic.
 """
 from __future__ import annotations
 
@@ -22,15 +22,24 @@ from scipy import stats
 from sklearn.linear_model import ElasticNet
 from sklearn.preprocessing import MinMaxScaler
 
+from harness import (
+    apply_ge_cap,
+    apply_var_cap_iterative,
+    gaussian_var,
+    historical_var_compound,
+)
+
 __all__ = [
+    # Notebook-stable aliases (back-compat re-exports)
     "calculate_var_gaussian",
     "calculate_historical_var",
-    "test_normality",
     "apply_gross_exposure_cap",
     "apply_var_cap",
+    # Original track logic
+    "test_normality",
+    "fit_elastic_net",
     "compute_turnover",
     "compute_metrics",
-    "fit_elastic_net",
     "run_backtest",
     "evaluate_crisis_window",
     "build_scenario_grid",
@@ -40,49 +49,27 @@ __all__ = [
 
 
 # ---------------------------------------------------------------------------
-# VaR helpers
+# Back-compat re-exports (canonical implementations live in harness.py)
 # ---------------------------------------------------------------------------
 
 def calculate_var_gaussian(returns, confidence: float = 0.01, horizon: int = 4) -> float:
-    """Parametric Gaussian VaR as a positive loss fraction of NAV."""
-    sigma = np.std(returns)
-    z_score = stats.norm.ppf(confidence)
-    return float(-z_score * sigma * np.sqrt(horizon))
+    """Back-compat alias for ``harness.gaussian_var``."""
+    return gaussian_var(returns, conf=confidence, horizon=horizon)
 
 
 def calculate_historical_var(returns, confidence: float = 0.01, horizon: int = 4) -> float:
-    """Historical-quantile VaR over a multi-week horizon."""
-    returns = np.asarray(returns, dtype=float)
-    series = pd.Series(returns[~np.isnan(returns)])
-    horizon_returns = (1 + series).rolling(window=horizon).apply(np.prod, raw=True) - 1
-    horizon_returns = horizon_returns.dropna()
-    if len(horizon_returns) == 0:
-        return float("nan")
-    return float(-np.quantile(horizon_returns, confidence))
+    """Back-compat alias for ``harness.historical_var_compound`` (rolling-compound algorithm)."""
+    return historical_var_compound(returns, conf=confidence, horizon=horizon)
 
-
-def test_normality(returns, alpha: float = 0.05) -> Dict[str, Dict[str, Any]]:
-    """Jarque-Bera test for return normality."""
-    stat_jb, p_jb = stats.jarque_bera(returns)
-    return {
-        "Jarque-Bera": {"stat": float(stat_jb), "p_value": float(p_jb), "normal": bool(p_jb > alpha)},
-    }
-
-
-# ---------------------------------------------------------------------------
-# Constraint projections
-# ---------------------------------------------------------------------------
 
 def apply_gross_exposure_cap(weights, max_gross_exposure: float) -> Tuple[np.ndarray, float, float]:
-    """Scale weights so sum |w_j| <= max_gross_exposure."""
-    weights = np.asarray(weights, dtype=float)
-    gross_exposure = float(np.sum(np.abs(weights)))
-    scaling_factor = 1.0
-    if gross_exposure > max_gross_exposure:
-        scaling_factor = max_gross_exposure / gross_exposure
-        weights = weights * scaling_factor
-        gross_exposure = float(np.sum(np.abs(weights)))
-    return weights, scaling_factor, gross_exposure
+    """Back-compat shim. Returns ``(scaled_weights, scaling, gross_exposure)``.
+
+    The third element is the post-projection gross exposure, recomputed here because
+    ``harness.apply_ge_cap`` does not return it.
+    """
+    scaled, scaling = apply_ge_cap(np.asarray(weights, dtype=float), max_gross_exposure)
+    return scaled, scaling, float(np.sum(np.abs(scaled)))
 
 
 def apply_var_cap(
@@ -94,36 +81,47 @@ def apply_var_cap(
     step: float = 0.01,
     min_scaling: float = 0.0,
 ) -> Tuple[np.ndarray, float, float, pd.DataFrame]:
-    """Iteratively shrink weights until historical VaR <= max_var.
-
-    Returns (scaled_weights, scaling, final_var, scan_history_df).
-    """
-    scaling = 1.0
-    history: list[dict] = []
-    while scaling >= min_scaling:
-        weights_scaled = weights * scaling
-        portfolio_returns = X_values @ weights_scaled
-        var_value = calculate_historical_var(
-            portfolio_returns, confidence=var_confidence, horizon=var_horizon,
-        )
-        history.append({"scaling": scaling, "VaR": var_value})
-        if not np.isnan(var_value) and var_value <= max_var:
-            return weights_scaled, scaling, var_value, pd.DataFrame(history)
-        scaling -= step
-    history_df = pd.DataFrame(history)
-    return weights * min_scaling, min_scaling, history_df["VaR"].iloc[-1], history_df
+    """Back-compat alias for ``harness.apply_var_cap_iterative``."""
+    return apply_var_cap_iterative(
+        np.asarray(weights, dtype=float),
+        np.asarray(X_values, dtype=float),
+        var_confidence=var_confidence,
+        var_horizon=var_horizon,
+        max_var=max_var,
+        step=step,
+        min_scaling=min_scaling,
+    )
 
 
 # ---------------------------------------------------------------------------
-# Metrics
+# Track-specific helpers
 # ---------------------------------------------------------------------------
+
+def test_normality(returns, alpha: float = 0.05) -> Dict[str, Dict[str, Any]]:
+    """Jarque-Bera test for return normality. In-sample diagnostic; not used by any model."""
+    stat_jb, p_jb = stats.jarque_bera(returns)
+    return {
+        "Jarque-Bera": {"stat": float(stat_jb), "p_value": float(p_jb), "normal": bool(p_jb > alpha)},
+    }
+
+
+def fit_elastic_net(X_train, y_train, alpha: float = 0.001, l1_ratio: float = 0.5) -> np.ndarray:
+    """MinMax-normalised ElasticNet fit; coefficients rescaled to raw return units."""
+    scaler_X = MinMaxScaler()
+    X_norm = scaler_X.fit_transform(X_train)
+    scaler_y = MinMaxScaler()
+    y_norm = scaler_y.fit_transform(np.asarray(y_train).reshape(-1, 1)).flatten()
+    model = ElasticNet(
+        alpha=alpha, l1_ratio=l1_ratio,
+        fit_intercept=False, max_iter=10000, tol=1e-4,
+    )
+    model.fit(X_norm, y_norm)
+    return model.coef_ / scaler_X.scale_
+
 
 def compute_turnover(weights_history) -> float:
     """Mean L1 weight change between consecutive rebalances."""
-    if isinstance(weights_history, pd.DataFrame):
-        vals = weights_history.values
-    else:
-        vals = weights_history
+    vals = weights_history.values if isinstance(weights_history, pd.DataFrame) else weights_history
     diffs = [np.sum(np.abs(vals[t] - vals[t - 1])) for t in range(1, len(vals))]
     return float(np.mean(diffs)) if diffs else 0.0
 
@@ -136,7 +134,12 @@ def compute_metrics(
     cost_bps: float = 5,
     var_values: Optional[Iterable[float]] = None,
 ) -> pd.DataFrame:
-    """Wide set of replication metrics, returned as a (Metric × Value) DataFrame."""
+    """Wide set of replication metrics, returned as a (Metric x Value) DataFrame.
+
+    Kept as the constraint track's metrics shaping function — harness has a similar helper
+    (``metrics_from_returns``) but with a different schema. This one preserves the layout the
+    notebook's constraint tables expect.
+    """
     ann = 52
     diff = asset_returns - target_returns
     rep_ann = float(asset_returns.mean() * ann)
@@ -174,23 +177,8 @@ def compute_metrics(
 
 
 # ---------------------------------------------------------------------------
-# Elastic-Net rolling backtest
+# Constraint-aware rolling backtest
 # ---------------------------------------------------------------------------
-
-def fit_elastic_net(X_train, y_train, alpha: float = 0.001, l1_ratio: float = 0.5) -> np.ndarray:
-    """MinMax-normalised Elastic-Net fit; coefficients rescaled to raw return units."""
-    scaler_X = MinMaxScaler()
-    X_norm = scaler_X.fit_transform(X_train)
-    scaler_y = MinMaxScaler()
-    y_norm = scaler_y.fit_transform(np.asarray(y_train).reshape(-1, 1)).flatten()
-
-    model = ElasticNet(
-        alpha=alpha, l1_ratio=l1_ratio,
-        fit_intercept=False, max_iter=10000, tol=1e-4,
-    )
-    model.fit(X_norm, y_norm)
-    return model.coef_ / scaler_X.scale_
-
 
 def run_backtest(
     X_values,
@@ -209,9 +197,14 @@ def run_backtest(
     var_confidence: float = 0.01,
     var_horizon: int = 4,
 ) -> Dict[str, Any]:
-    """Rolling Elastic-Net backtest with GE and VaR projection at every rebalance."""
-    X_values = np.asarray(X_values)
-    y_values = np.asarray(y_values).reshape(-1)
+    """Rolling ElasticNet backtest with GE + iterative-VaR projection at every rebalance.
+
+    Each rebalance: fit MinMax-ElasticNet on the trailing window, project onto the gross-exposure
+    feasible set, then iteratively shrink until historical VaR over the last 52w is <= ``max_var``.
+    Between rebalances the projected weights are held constant.
+    """
+    X_values = np.asarray(X_values, dtype=float)
+    y_values = np.asarray(y_values, dtype=float).reshape(-1)
     n_feat = X_values.shape[1]
 
     weights_list: list[np.ndarray] = []
@@ -225,7 +218,7 @@ def run_backtest(
     current_weights = np.zeros(n_feat)
     last_rebal_idx = -999
     scaling = 1.0
-    var = float("nan")
+    var_value = float("nan")
 
     for i in range(len(X_values) - rolling_window - 1):
         end_idx = i + rolling_window
@@ -248,24 +241,22 @@ def run_backtest(
             )
             current_weights = weights_after_var
             scaling = ge_scaling * var_scaling
-            var = final_var
+            var_value = final_var
             last_rebal_idx = i
         else:
             scaling = 1.0
             hist_rets = replica_list[max(0, len(replica_list) - 52):] if replica_list else []
             if len(hist_rets) >= max(12, var_horizon):
-                var = calculate_historical_var(
-                    hist_rets, confidence=var_confidence, horizon=var_horizon,
-                )
+                var_value = historical_var_compound(hist_rets, conf=var_confidence, horizon=var_horizon)
             else:
-                var = float("nan")
+                var_value = float("nan")
 
         replica_ret = float(np.dot(X_values[end_idx], current_weights))
         replica_list.append(replica_ret)
         target_list.append(float(y_values[end_idx]))
         date_list.append(dates[end_idx])
         weights_list.append(current_weights.copy())
-        var_list.append(var)
+        var_list.append(var_value)
         scaling_list.append(scaling)
         ge_list.append(float(np.sum(np.abs(current_weights))))
 
@@ -318,7 +309,7 @@ def evaluate_crisis_window(replica_series: pd.Series, target_series: pd.Series, 
     mdd = float((1 - cum_path / cum_path.cummax()).max())
     corr = float(rep.corr(tgt))
     te_c = float((rep - tgt).std() * np.sqrt(52))
-    var_r = calculate_historical_var(rep.values, confidence=0.01, horizon=4)
+    var_r = historical_var_compound(rep.values, conf=0.01, horizon=4)
     return {
         "cum_rep": cum_rep, "cum_tgt": cum_tgt,
         "mdd": mdd, "corr": corr, "te_crisis": te_c, "var_realized": var_r,
@@ -337,7 +328,7 @@ def build_scenario_grid(
     rolling_windows: Iterable[int] = (52, 104),
     max_vars: Iterable[float] = (0.06, 0.08, 0.12),
 ) -> List[Dict[str, Any]]:
-    """Cartesian product of the six hyper-parameters; returns config dicts for `run_backtest`."""
+    """Cartesian product of the six hyper-parameters; returns config dicts for ``run_backtest``."""
     freq_tags = {1: "Wkly", 2: "BiWkly", 4: "Mthly", 8: "BiMthly", 12: "Qtrly"}
     configs: list[dict] = []
     for idx, (rf, ge, a, l1, rw, mv) in enumerate(
@@ -374,7 +365,7 @@ def run_scenario_search(
     verbose: bool = True,
     verbose_every: int = 50,
 ) -> Dict[str, Dict[str, Any]]:
-    """Run `run_backtest` for every grid config; return labelled results."""
+    """Run ``run_backtest`` for every grid config; return labelled results."""
     scenario_results: Dict[str, Dict[str, Any]] = {}
     n = len(configs)
     for i, config in enumerate(configs, start=1):
@@ -400,10 +391,10 @@ def run_scenario_search(
                 IR = m.loc["IR", "Value"]
                 TE = m.loc["TE", "Value"]
                 rho = m.loc["p", "Value"]
-                print(f"  [{i:>4}/{n}]  {label}  IR={IR:+.3f}  TE={TE:.2%}  ρ={rho:.3f}  — {config['desc']}")
+                print(f"  [{i:>4}/{n}]  {label}  IR={IR:+.3f}  TE={TE:.2%}  rho={rho:.3f}  - {config['desc']}")
         except Exception as e:
             if verbose:
-                print(f"  [{i:>4}/{n}]  {label}  ✗ ERROR: {e}")
+                print(f"  [{i:>4}/{n}]  {label}  ERROR: {e}")
     print(f"\nCompleted {len(scenario_results)}/{n} scenarios successfully.")
     return scenario_results
 

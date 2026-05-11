@@ -473,6 +473,31 @@ def historical_var(
     return float(-np.quantile(r, conf) * np.sqrt(horizon))
 
 
+def historical_var_compound(
+    returns: Union[np.ndarray, pd.Series],
+    conf: float = DEFAULT_VAR_CONF,
+    horizon: int = DEFAULT_VAR_HORIZON_W,
+) -> float:
+    """Historical VaR from the empirical distribution of compounded ``horizon``-step returns.
+
+    Unlike ``historical_var`` (which takes the 1-step quantile and scales by ``sqrt(horizon)``),
+    this helper builds the rolling compound-return series and quantiles that directly. Use this
+    when the multi-period return distribution is fat-tailed and the parametric square-root-of-time
+    scaling would understate the tail risk. Returns NaN if fewer than ``horizon`` finite
+    observations are available.
+    """
+    r = np.asarray(returns, dtype=float)
+    r = r[np.isfinite(r)]
+    if r.size < horizon:
+        return float("nan")
+    series = pd.Series(r)
+    horizon_returns = (1 + series).rolling(window=horizon).apply(np.prod, raw=True) - 1
+    horizon_returns = horizon_returns.dropna()
+    if len(horizon_returns) == 0:
+        return float("nan")
+    return float(-np.quantile(horizon_returns, conf))
+
+
 def expected_shortfall(
     returns: Union[np.ndarray, pd.Series],
     conf: float = DEFAULT_VAR_CONF,
@@ -837,6 +862,17 @@ def _apply_ge_cap(
     return weights, 1.0
 
 
+def apply_ge_cap(
+    weights: np.ndarray, ge_cap: Optional[float]
+) -> Tuple[np.ndarray, float]:
+    """Public alias for the gross-exposure-cap projection.
+
+    Same contract as ``_apply_ge_cap`` (returns ``(scaled_weights, scaling)``); exposed so
+    downstream modules don't need to reach into private names.
+    """
+    return _apply_ge_cap(weights, ge_cap)
+
+
 def _apply_var_cap(
     weights: np.ndarray,
     X_hist: np.ndarray,
@@ -855,6 +891,42 @@ def _apply_var_cap(
         scale = var_cap / projected_var
         return weights * scale, var_cap, scale
     return weights, projected_var, 1.0
+
+
+def apply_var_cap_iterative(
+    weights: np.ndarray,
+    X_hist: np.ndarray,
+    *,
+    var_confidence: float = DEFAULT_VAR_CONF,
+    var_horizon: int = DEFAULT_VAR_HORIZON_W,
+    max_var: float = DEFAULT_VAR_CAP,
+    step: float = 0.01,
+    min_scaling: float = 0.0,
+) -> Tuple[np.ndarray, float, float, pd.DataFrame]:
+    """Iteratively shrink ``weights`` until historical VaR over ``X_hist`` is at most ``max_var``.
+
+    Mirrors the projection layer the rebalancing & portfolio-constraints track uses. The
+    returned tuple matches the four-tuple ``portfolio_constraints.apply_var_cap`` exposes today
+    so the notebook keeps working without signature changes.
+
+    Returns
+    -------
+    scaled_weights, scaling, final_var, history_df
+    """
+    weights = np.asarray(weights, dtype=float)
+    history: list[dict] = []
+    scaling = 1.0
+    while scaling >= min_scaling:
+        weights_scaled = weights * scaling
+        portfolio_returns = X_hist @ weights_scaled
+        var_value = historical_var_compound(portfolio_returns, conf=var_confidence, horizon=var_horizon)
+        history.append({"scaling": scaling, "VaR": var_value})
+        if not np.isnan(var_value) and var_value <= max_var:
+            return weights_scaled, scaling, var_value, pd.DataFrame(history)
+        scaling -= step
+    history_df = pd.DataFrame(history)
+    final_var = float(history_df["VaR"].iloc[-1]) if not history_df.empty else float("nan")
+    return weights * min_scaling, min_scaling, final_var, history_df
 
 
 def _is_roll_week(k: int, cfg: HarnessConfig) -> bool:
@@ -2012,6 +2084,8 @@ __all__ = [
     "StandardizationMode",
     "TARGET_WEIGHTS",
     "TCModel",
+    "apply_ge_cap",
+    "apply_var_cap_iterative",
     "asset_cost_attribution",
     "assumption_register",
     "benchmark_result_table",
@@ -2028,6 +2102,7 @@ __all__ = [
     "gaussian_var",
     "hash_inputs",
     "historical_var",
+    "historical_var_compound",
     "information_ratio",
     "load_bloomberg_weekly",
     "load_result",
