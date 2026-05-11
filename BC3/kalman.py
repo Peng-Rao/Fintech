@@ -189,20 +189,59 @@ def fit_hmm_regime(
     vol_window: int = 12,
     n_iter: int = 100,
     random_state: int = 42,
+    fit_until: Optional[pd.Timestamp] = None,
 ) -> Tuple[pd.Series, np.ndarray, int]:
     """Two-state Gaussian HMM on rolling realised target volatility.
 
-    Returns (regime_indicator [0=calm, 1=stressed], state_means, stress_state_index).
+    Parameters
+    ----------
+    fit_until : pd.Timestamp or None
+        If provided, the HMM is fit on ``y.loc[:fit_until]`` only; the resulting model
+        is then used to *predict* regime labels over the full sample. This prevents
+        look-ahead leakage when downstream code feeds the regime label into a rolling
+        model. If None (default), the HMM is fit on the full series — legacy behaviour
+        retained for back-compat, but callers in the notebook must pass ``fit_until``.
+
+    Returns
+    -------
+    regime : pd.Series
+        Indicator (0 = calm, 1 = stressed), indexed by ``y.index``.
+    state_means : np.ndarray
+        Two-element array of fitted volatility means per state.
+    stress_state : int
+        Index (0 or 1) of the state with the higher mean volatility.
     """
     from hmmlearn.hmm import GaussianHMM
 
-    vol_obs = y.rolling(vol_window, min_periods=4).std().bfill().values.reshape(-1, 1)
+    vol = y.rolling(vol_window, min_periods=4).std().bfill()
+    vol_full = vol.values.reshape(-1, 1)
+
+    if fit_until is not None:
+        vol_fit = vol.loc[:fit_until].values.reshape(-1, 1)
+        if vol_fit.shape[0] == vol_full.shape[0]:
+            import warnings
+            warnings.warn(
+                f"fit_until={fit_until!r} is at or after the last observation "
+                f"({vol.index[-1]!r}); HMM will be fit on the full series — "
+                f"this defeats the look-ahead guard.",
+                stacklevel=2,
+            )
+        min_obs = max(2 * vol_window, 24)
+        if vol_fit.shape[0] < min_obs:
+            raise ValueError(
+                f"fit_until={fit_until!r} leaves only {vol_fit.shape[0]} observations; "
+                f"need at least {min_obs} for a stable HMM fit. "
+                f"Pass a later fit_until timestamp or reduce vol_window."
+            )
+    else:
+        vol_fit = vol_full
+
     hmm_model = GaussianHMM(
         n_components=2, covariance_type="full",
         n_iter=n_iter, random_state=random_state,
     )
-    hmm_model.fit(vol_obs)
-    states = hmm_model.predict(vol_obs)
+    hmm_model.fit(vol_fit)
+    states = hmm_model.predict(vol_full)
     stress_state = int(np.argmax(hmm_model.means_.ravel()))
     regime = pd.Series(
         (states == stress_state).astype(int), index=y.index, name="regime",
