@@ -10,6 +10,7 @@ Four phases:
 Every alpha factory must accept (X_tr, y_tr) at .fit() and expose .coef_, the
 sklearn convention. OLS, Ridge, Lasso, ElasticNet and HuberRegressor all conform.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -18,9 +19,8 @@ from typing import Any, Callable, Optional
 import cvxpy as cp
 import numpy as np
 import pandas as pd
-from sklearn.covariance import LedoitWolf
-
 from harness import FlatBpsTC, HarnessConfig, ReplicaResult, evaluate_weights
+from sklearn.covariance import LedoitWolf
 
 __all__ = [
     "POConfig",
@@ -40,14 +40,15 @@ class POConfig:
     (Var(w'r-y) = w'Sigma w - 2 w'sigma_{ry} + ...), so the convex objective recovers
     the OLS/Ridge fit when constraints are slack.
     """
-    risk_aversion: float = 2.0          # lambda in 0.5*lambda*w'Sigma w
-    tc_bps: float = 5.0                 # tau in tau * ||w - w_prev||_1 (one-way bps)
-    ge_cap: float = 2.0                 # gross-exposure cap: sum |w_j| <= ge_cap
-    w_cap: float = 0.5                  # per-asset cap: |w_j| <= w_cap
-    use_lw_shrinkage: bool = True       # Ledoit-Wolf shrinkage on Sigma
-    top_k: Optional[int] = None         # optional |corr(r_j, y)| pre-selection
-    long_only: bool = False             # long-only: w >= 0 (no shorts)
-    solver: str = "CLARABEL"            # CVXPY solver; SCS fallback on failure
+
+    risk_aversion: float = 2.0  # lambda in 0.5*lambda*w'Sigma w
+    tc_bps: float = 5.0  # tau in tau * ||w - w_prev||_1 (one-way bps)
+    ge_cap: float = 2.0  # gross-exposure cap: sum |w_j| <= ge_cap
+    w_cap: float = 0.5  # per-asset cap: |w_j| <= w_cap
+    use_lw_shrinkage: bool = True  # Ledoit-Wolf shrinkage on Sigma
+    top_k: Optional[int] = None  # optional |corr(r_j, y)| pre-selection
+    long_only: bool = False  # long-only: w >= 0 (no shorts)
+    solver: str = "CLARABEL"  # CVXPY solver; SCS fallback on failure
 
 
 def alpha_from_linear_fit(
@@ -162,7 +163,7 @@ def run_predict_then_optimize_backtest(
             f"rolling_window={cfg.rolling_window} must be smaller than len(X)={n_obs}"
         )
 
-    eval_dates = X.index[cfg.rolling_window:]
+    eval_dates = X.index[cfg.rolling_window :]
     rb_offsets = list(range(0, len(eval_dates), cfg.rebalance_every))
     rb_dates = pd.DatetimeIndex([eval_dates[k] for k in rb_offsets])
 
@@ -176,14 +177,23 @@ def run_predict_then_optimize_backtest(
 
         active = (
             top_k_active(X_tr, y_tr, po_config.top_k)
-            if po_config.top_k is not None else np.arange(n_feat)
+            if po_config.top_k is not None
+            else np.arange(n_feat)
         )
         Xa_tr = X_tr[:, active]
 
         mu_a = alpha_from_linear_fit(alpha_factory, Xa_tr, y_tr)
         Sigma_a = shrunk_covariance(Xa_tr, po_config.use_lw_shrinkage)
+
+        # Transform the linear-model coefficients (which are optimal unconstrained weights)
+        # into the implied 'mu' vector for the standard mean-variance objective:
+        # FOC: mu - lambda * Sigma * w = 0  => mu = lambda * Sigma * w_opt
+        implied_mu = po_config.risk_aversion * (Sigma_a @ mu_a)
+
         w_a = solve_po(
-            mu_a, Sigma_a, w_prev[active],
+            implied_mu,
+            Sigma_a,
+            w_prev[active],
             risk_aversion=po_config.risk_aversion,
             tc_bps=po_config.tc_bps,
             ge_cap=po_config.ge_cap,
@@ -199,7 +209,9 @@ def run_predict_then_optimize_backtest(
     weights_history = pd.DataFrame(np.stack(rows), index=rb_dates, columns=X.columns)
 
     return evaluate_weights(
-        X, y, weights_history,
+        X,
+        y,
+        weights_history,
         schedule_type="rebalance",
         tc_model=FlatBpsTC(po_config.tc_bps),
         config=cfg,
