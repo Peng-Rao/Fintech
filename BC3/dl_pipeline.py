@@ -4,17 +4,16 @@ Splits naturally into five layers:
     1. Feature engineering — build_features (vanilla) and build_features_pca (PCA variant).
        Both are leakage-safe: rolling-window PCA, trailing-window Ridge warm-start, and
        a final .shift(1) on the full feature frame.
-    2. Models                — WeightMLP and WeightTransformer.
+    2. Models                — WeightMLP.
     3. Loss & windowing      — make_supervised_windows, te_mse_loss, turnover_penalty,
-                               annualized_te_from_weights, _drift_weights, project_var_cap,
-                               make_attention_windows.
+                               annualized_te_from_weights, _drift_weights, project_var_cap.
     4. Trainer               — TrainConfig + train_weight_mlp (chronological split, early stop).
-    5. Rolling backtest      — compute_metrics + run_nn_rolling_backtest +
-                               run_attn_rolling_backtest.
+    5. Rolling backtest      — compute_metrics + run_nn_rolling_backtest.
 
 Functions infer the active torch device from `next(model.parameters()).device`, so the module
 has no global `device` dependency — drop the model on whatever device you like and pass it in.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -36,10 +35,8 @@ __all__ = [
     "build_features_pca",
     # Models
     "WeightMLP",
-    "WeightTransformer",
     # Windowing & loss
     "make_supervised_windows",
-    "make_attention_windows",
     "te_mse_loss",
     "turnover_penalty",
     "annualized_te_from_weights",
@@ -50,7 +47,6 @@ __all__ = [
     # Backtest & metrics
     "compute_metrics",
     "run_nn_rolling_backtest",
-    "run_attn_rolling_backtest",
 ]
 
 
@@ -62,6 +58,7 @@ __all__ = [
 @dataclass
 class FeatureConfig:
     """Feature design knobs."""
+
     return_lookbacks: tuple = (4, 12, 52)
     vol_lookbacks: tuple = (12, 52)
     use_regime: bool = True
@@ -83,9 +80,9 @@ def _ridge_warmstart(
     Xv, yv = X.values, y.values
     for i in range(window, len(X)):
         scaler = MinMaxScaler()
-        X_tr = scaler.fit_transform(Xv[i - window:i])
+        X_tr = scaler.fit_transform(Xv[i - window : i])
         mdl = Ridge(alpha=alpha, fit_intercept=False)
-        mdl.fit(X_tr, yv[i - window:i])
+        mdl.fit(X_tr, yv[i - window : i])
         out.iloc[i] = mdl.coef_ / scaler.scale_
     return out
 
@@ -145,7 +142,7 @@ def build_features_pca(
     pca_df = pd.DataFrame(index=X.index, columns=pca_cols, dtype=float)
     Xv = X.values
     for i in range(pca_window, len(X)):
-        Xw = Xv[i - pca_window:i]
+        Xw = Xv[i - pca_window : i]
         Xw_c = Xw - Xw.mean(axis=0, keepdims=True)
         scores = PCA(n_components=n_components).fit_transform(Xw_c)
         pca_df.iloc[i] = scores[-1]
@@ -214,46 +211,16 @@ class WeightMLP(nn.Module):
         return w
 
 
-class WeightTransformer(nn.Module):
-    """Tiny Transformer over [T_w, n_features] -> w_t in R^n_assets."""
-
-    def __init__(
-        self,
-        n_features: int,
-        n_assets: int = 11,
-        d_model: int = 32,
-        nhead: int = 4,
-        num_layers: int = 2,
-        dropout: float = 0.1,
-        gross_cap: float | None = None,
-    ):
-        super().__init__()
-        self.proj = nn.Linear(n_features, d_model)
-        layer = nn.TransformerEncoderLayer(
-            d_model=d_model, nhead=nhead,
-            dim_feedforward=d_model * 2, dropout=dropout, batch_first=True,
-        )
-        self.encoder = nn.TransformerEncoder(layer, num_layers=num_layers)
-        self.head = nn.Linear(d_model, n_assets)
-        self.gross_cap = gross_cap
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        z = self.encoder(self.proj(x))
-        w = self.head(z[:, -1, :])
-        if self.gross_cap is not None:
-            ge = w.abs().sum(dim=-1, keepdim=True).clamp(min=1e-8)
-            scale = torch.minimum(torch.ones_like(ge), self.gross_cap / ge)
-            w = w * scale
-        return w
-
-
 # =============================================================================
 # 3. Windowing & loss
 # =============================================================================
 
 
 def make_supervised_windows(
-    phi: pd.DataFrame, X: pd.DataFrame, y: pd.Series, H: int = 12,
+    phi: pd.DataFrame,
+    X: pd.DataFrame,
+    y: pd.Series,
+    H: int = 12,
 ):
     """Pair each phi_t with the contemporaneous H-week window of (r_s, y_s)."""
     H = int(H)
@@ -263,29 +230,14 @@ def make_supervised_windows(
     X_aligned = X.loc[phi.index].values
     y_aligned = y.loc[phi.index].values
     phi_arr = phi.values[:n_samples].astype(np.float32)
-    X_win = np.stack([X_aligned[i:i + H] for i in range(n_samples)]).astype(np.float32)
-    y_win = np.stack([y_aligned[i:i + H] for i in range(n_samples)]).astype(np.float32)
+    X_win = np.stack([X_aligned[i : i + H] for i in range(n_samples)]).astype(
+        np.float32
+    )
+    y_win = np.stack([y_aligned[i : i + H] for i in range(n_samples)]).astype(
+        np.float32
+    )
     sample_dates = phi.index[:n_samples]
     return phi_arr, X_win, y_win, sample_dates
-
-
-def make_attention_windows(X: pd.DataFrame, y: pd.Series, T_w: int = 52, H: int = 12):
-    """Build [phi_seq_t, X_win_t, y_win_t] tuples for the transformer variant.
-
-    phi_seq_t = X.iloc[t-T_w:t] (lagged trailing window) so the model only sees information
-    available before time t.
-    """
-    n = len(X)
-    starts = list(range(T_w, n - H + 1))
-    if not starts:
-        raise ValueError("not enough data for attention windows")
-    Xv = X.values.astype(np.float32)
-    yv = y.values.astype(np.float32)
-    phi_seq = np.stack([Xv[t - T_w:t] for t in starts])
-    X_win = np.stack([Xv[t:t + H] for t in starts])
-    y_win = np.stack([yv[t:t + H] for t in starts])
-    sample_dates = X.index[starts[0]:starts[-1] + 1]
-    return phi_seq, X_win, y_win, sample_dates
 
 
 def _drift_weights(weights: torch.Tensor, X_win: torch.Tensor) -> torch.Tensor:
@@ -317,7 +269,7 @@ def te_mse_loss(
     else:
         replica = (weights.unsqueeze(1) * X_win).sum(dim=-1)
     excess = replica - y_win
-    loss = (excess ** 2).mean()
+    loss = (excess**2).mean()
     if gamma_budget > 0.0:
         loss = loss + gamma_budget * (weights.sum(dim=-1) - 1.0).pow(2).mean()
     return loss
@@ -382,6 +334,7 @@ def project_var_cap(
 @dataclass
 class TrainConfig:
     """training knobs: temporal split, optimiser, early stopping, loss."""
+
     H: int = 12
     train_frac: float = 0.6
     val_frac: float = 0.2
@@ -439,7 +392,9 @@ def train_weight_mlp(
     y_tr, y_va, y_te = y_all[sl_tr], y_all[sl_va], y_all[sl_te]
 
     optim = torch.optim.Adam(
-        model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay,
+        model.parameters(),
+        lr=cfg.lr,
+        weight_decay=cfg.weight_decay,
     )
 
     best_val_te = float("inf")
@@ -459,7 +414,9 @@ def train_weight_mlp(
             y_b = y_tr[start:stop]
 
             w_b = model(phi_b)
-            loss = te_mse_loss(w_b, X_b, y_b, gamma_budget=cfg.gamma_budget, drift=cfg.drift)
+            loss = te_mse_loss(
+                w_b, X_b, y_b, gamma_budget=cfg.gamma_budget, drift=cfg.drift
+            )
             loss = loss + turnover_penalty(w_b, cfg.lambda_l1, cfg.lambda_l2)
 
             optim.zero_grad()
@@ -502,7 +459,9 @@ def train_weight_mlp(
         refit_epochs = max(best_epoch_idx + 1, 1)
         model.load_state_dict(init_state)
         optim_refit = torch.optim.Adam(
-            model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay,
+            model.parameters(),
+            lr=cfg.lr,
+            weight_decay=cfg.weight_decay,
         )
         phi_full = torch.cat([phi_tr, phi_va], dim=0)
         X_full = torch.cat([X_tr, X_va], dim=0)
@@ -516,7 +475,9 @@ def train_weight_mlp(
                 X_b = X_full[start:stop]
                 y_b = y_full[start:stop]
                 w_b = model(phi_b)
-                loss = te_mse_loss(w_b, X_b, y_b, gamma_budget=cfg.gamma_budget, drift=cfg.drift)
+                loss = te_mse_loss(
+                    w_b, X_b, y_b, gamma_budget=cfg.gamma_budget, drift=cfg.drift
+                )
                 loss = loss + turnover_penalty(w_b, cfg.lambda_l1, cfg.lambda_l2)
                 optim_refit.zero_grad()
                 loss.backward()
@@ -583,9 +544,15 @@ def compute_metrics(
     var_overall = float(-z * sigma_replica * np.sqrt(var_horizon))
 
     return {
-        "IR": ir, "TE": te, "rho": rho, "GE": ge,
-        "turnover": turnover, "VaR": var_overall,
-        "net_IR": net_ir, "net_TE": net_te, "cost_drag": drag,
+        "IR": ir,
+        "TE": te,
+        "rho": rho,
+        "GE": ge,
+        "turnover": turnover,
+        "VaR": var_overall,
+        "net_IR": net_ir,
+        "net_TE": net_te,
+        "cost_drag": drag,
     }
 
 
@@ -695,15 +662,20 @@ def run_nn_rolling_backtest(
     """
     if device is None:
         device = torch.device(
-            "cuda" if torch.cuda.is_available()
+            "cuda"
+            if torch.cuda.is_available()
             else ("mps" if torch.backends.mps.is_available() else "cpu")
         )
-    phi_arr_full, X_win_full, y_win_full, sample_dates = make_supervised_windows(phi, X, y, H=H)
+    phi_arr_full, X_win_full, y_win_full, sample_dates = make_supervised_windows(
+        phi, X, y, H=H
+    )
     n = len(phi_arr_full)
     in_dim = phi_arr_full.shape[1]
     n_assets = X.shape[1]
     if n < train_window + 1:
-        raise ValueError(f"need n >= train_window+1, got n={n}, train_window={train_window}")
+        raise ValueError(
+            f"need n >= train_window+1, got n={n}, train_window={train_window}"
+        )
 
     weights_by_date: dict = {}
     last_states: list[dict | None] = [None] * n_ensemble
@@ -717,25 +689,37 @@ def run_nn_rolling_backtest(
         )
 
     for k, t in enumerate(rebalance_indices):
-        phi_tr = phi_arr_full[t - train_window:t]
-        X_tr = X_win_full[t - train_window:t]
-        y_tr = y_win_full[t - train_window:t]
+        phi_tr = phi_arr_full[t - train_window : t]
+        X_tr = X_win_full[t - train_window : t]
+        y_tr = y_win_full[t - train_window : t]
 
         ensemble_models: list = []
         mu_use: np.ndarray | None = None
         sd_use: np.ndarray | None = None
         for j in range(n_ensemble):
             model_j, mu_j, sd_j = _train_window_mlp(
-                phi_tr, X_tr, y_tr,
-                in_dim=in_dim, n_assets=n_assets, gross_cap=gross_cap,
-                lambda_l1=lambda_l1, lambda_l2=lambda_l2, gamma_budget=gamma_budget,
-                drift=drift, max_epochs=max_epochs, patience=patience,
-                val_frac=val_frac_within_train, init_state=last_states[j],
-                seed=seed + 1000 * j + k, device=device,
+                phi_tr,
+                X_tr,
+                y_tr,
+                in_dim=in_dim,
+                n_assets=n_assets,
+                gross_cap=gross_cap,
+                lambda_l1=lambda_l1,
+                lambda_l2=lambda_l2,
+                gamma_budget=gamma_budget,
+                drift=drift,
+                max_epochs=max_epochs,
+                patience=patience,
+                val_frac=val_frac_within_train,
+                init_state=last_states[j],
+                seed=seed + 1000 * j + k,
+                device=device,
             )
             ensemble_models.append(model_j)
             mu_use, sd_use = mu_j, sd_j
-            last_states[j] = {k_: v_.detach().clone() for k_, v_ in model_j.state_dict().items()}
+            last_states[j] = {
+                k_: v_.detach().clone() for k_, v_ in model_j.state_dict().items()
+            }
 
         next_t = rebalance_indices[k + 1] if k + 1 < len(rebalance_indices) else n
         for s in range(t, min(next_t, n)):
@@ -746,11 +730,14 @@ def run_nn_rolling_backtest(
             w_s = np.mean(preds, axis=0)
             date_s = sample_dates[s]
             loc = X.index.get_loc(date_s)
-            recent = X.iloc[max(0, loc - 52):loc].values
+            recent = X.iloc[max(0, loc - 52) : loc].values
             if len(recent) >= 12:
                 w_s = project_var_cap(
-                    w_s, recent,
-                    confidence=var_confidence, horizon=var_horizon, var_cap=var_cap,
+                    w_s,
+                    recent,
+                    confidence=var_confidence,
+                    horizon=var_horizon,
+                    var_cap=var_cap,
                 )
             weights_by_date[date_s] = w_s
 
@@ -760,11 +747,17 @@ def run_nn_rolling_backtest(
     target_oos = y.loc[weights_df.index]
     replica = pd.Series(
         (weights_df.values * X_oos.values).sum(axis=1),
-        index=weights_df.index, name="replica",
+        index=weights_df.index,
+        name="replica",
     )
     metrics = compute_metrics(
-        weights_df, X_oos, target_oos, replica,
-        cost_bps=cost_bps, var_horizon=var_horizon, var_confidence=var_confidence,
+        weights_df,
+        X_oos,
+        target_oos,
+        replica,
+        cost_bps=cost_bps,
+        var_horizon=var_horizon,
+        var_confidence=var_confidence,
     )
     return {
         "weights_history": weights_df,
@@ -773,141 +766,3 @@ def run_nn_rolling_backtest(
         "metrics": metrics,
     }
 
-
-def run_attn_rolling_backtest(
-    X: pd.DataFrame,
-    y: pd.Series,
-    *,
-    T_w: int = 52,
-    H: int = 12,
-    train_window: int = 156,
-    rebalance_every: int = 4,
-    max_epochs: int = 60,
-    patience: int = 10,
-    lambda_l1: float = 1e-3,
-    lambda_l2: float = 1e-3,
-    gamma_budget: float = 1e-2,
-    drift: bool = True,
-    gross_cap: float = 2.0,
-    var_cap: float = 0.08,
-    var_horizon: int = 4,
-    var_confidence: float = 0.01,
-    val_frac_within_train: float = 0.2,
-    cost_bps: float = 5.0,
-    seed: int = 42,
-    verbose: bool = True,
-    device: Optional[torch.device] = None,
-) -> dict:
-    """Rolling OOS WeightTransformer backtest. Same contract as run_nn_rolling_backtest."""
-    if device is None:
-        device = torch.device(
-            "cuda" if torch.cuda.is_available()
-            else ("mps" if torch.backends.mps.is_available() else "cpu")
-        )
-    phi_seq, X_win, y_win, sample_dates = make_attention_windows(X, y, T_w=T_w, H=H)
-    n = len(phi_seq)
-    n_features = phi_seq.shape[2]
-    n_assets = X.shape[1]
-    if n < train_window + 1:
-        raise ValueError("not enough samples for attention rolling backtest")
-
-    weights_by_date: dict = {}
-    last_state: dict | None = None
-    rebalance_indices = list(range(train_window, n, rebalance_every))
-    if verbose:
-        print(
-            f"attn rebalance_every={rebalance_every}: {len(rebalance_indices)} retrains, "
-            f"OOS {sample_dates[train_window].date()} -> {sample_dates[-1].date()}"
-        )
-
-    for k, t in enumerate(rebalance_indices):
-        phi_tr = phi_seq[t - train_window:t]
-        X_tr_w = X_win[t - train_window:t]
-        y_tr_w = y_win[t - train_window:t]
-        n_va = max(int(val_frac_within_train * train_window), 8)
-        n_in = train_window - n_va
-
-        mu = phi_tr[:n_in].reshape(-1, n_features).mean(axis=0)
-        sd = phi_tr[:n_in].reshape(-1, n_features).std(axis=0)
-        sd = np.where(sd < 1e-8, 1.0, sd)
-        phi_norm = ((phi_tr - mu) / sd).astype(np.float32)
-
-        torch.manual_seed(seed + k)
-        np.random.seed(seed + k)
-        model = WeightTransformer(
-            n_features=n_features, n_assets=n_assets, gross_cap=gross_cap,
-        ).to(device)
-        if last_state is not None:
-            model.load_state_dict(last_state)
-        optim = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-5)
-
-        phi_tr_t = torch.tensor(phi_norm[:n_in], device=device)
-        X_tr_t = torch.tensor(X_tr_w[:n_in], device=device)
-        y_tr_t = torch.tensor(y_tr_w[:n_in], device=device)
-        phi_va_t = torch.tensor(phi_norm[n_in:], device=device)
-        X_va_t = torch.tensor(X_tr_w[n_in:], device=device)
-        y_va_t = torch.tensor(y_tr_w[n_in:], device=device)
-
-        best_val = float("inf")
-        best_state: dict | None = None
-        patience_left = patience
-        for _ in range(max_epochs):
-            model.train()
-            w_b = model(phi_tr_t)
-            loss = te_mse_loss(w_b, X_tr_t, y_tr_t, gamma_budget=gamma_budget, drift=drift)
-            loss = loss + turnover_penalty(w_b, lambda_l1, lambda_l2)
-            optim.zero_grad()
-            loss.backward()
-            optim.step()
-            model.eval()
-            with torch.no_grad():
-                w_va = model(phi_va_t)
-            val_te = annualized_te_from_weights(w_va, X_va_t, y_va_t, drift=drift)
-            if val_te < best_val - 1e-6:
-                best_val = val_te
-                best_state = {kk: vv.detach().clone() for kk, vv in model.state_dict().items()}
-                patience_left = patience
-            else:
-                patience_left -= 1
-                if patience_left <= 0:
-                    break
-        if best_state is not None:
-            model.load_state_dict(best_state)
-        last_state = {kk: vv.detach().clone() for kk, vv in model.state_dict().items()}
-
-        next_t = rebalance_indices[k + 1] if k + 1 < len(rebalance_indices) else n
-        for s in range(t, min(next_t, n)):
-            phi_s = ((phi_seq[s] - mu) / sd).astype(np.float32)
-            with torch.no_grad():
-                w_s = (
-                    model(torch.tensor(phi_s, device=device).unsqueeze(0))
-                    .cpu().numpy().flatten()
-                )
-            date_s = sample_dates[s]
-            loc = X.index.get_loc(date_s)
-            recent = X.iloc[max(0, loc - 52):loc].values
-            if len(recent) >= 12:
-                w_s = project_var_cap(
-                    w_s, recent,
-                    confidence=var_confidence, horizon=var_horizon, var_cap=var_cap,
-                )
-            weights_by_date[date_s] = w_s
-
-    weights_df = pd.DataFrame(weights_by_date).T.sort_index()
-    weights_df.columns = X.columns
-    X_oos = X.loc[weights_df.index]
-    target_oos = y.loc[weights_df.index]
-    replica = pd.Series(
-        (weights_df.values * X_oos.values).sum(axis=1),
-        index=weights_df.index, name="replica",
-    )
-    metrics = compute_metrics(
-        weights_df, X_oos, target_oos, replica,
-        cost_bps=cost_bps, var_horizon=var_horizon, var_confidence=var_confidence,
-    )
-    return {
-        "weights_history": weights_df,
-        "replica_returns": replica,
-        "target_returns": target_oos,
-        "metrics": metrics,
-    }

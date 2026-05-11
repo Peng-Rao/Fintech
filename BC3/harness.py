@@ -919,13 +919,17 @@ def apply_var_cap_iterative(
     while scaling >= min_scaling:
         weights_scaled = weights * scaling
         portfolio_returns = X_hist @ weights_scaled
-        var_value = historical_var_compound(portfolio_returns, conf=var_confidence, horizon=var_horizon)
+        var_value = historical_var_compound(
+            portfolio_returns, conf=var_confidence, horizon=var_horizon
+        )
         history.append({"scaling": scaling, "VaR": var_value})
         if not np.isnan(var_value) and var_value <= max_var:
             return weights_scaled, scaling, var_value, pd.DataFrame(history)
         scaling -= step
     history_df = pd.DataFrame(history)
-    final_var = float(history_df["VaR"].iloc[-1]) if not history_df.empty else float("nan")
+    final_var = (
+        float(history_df["VaR"].iloc[-1]) if not history_df.empty else float("nan")
+    )
     return weights * min_scaling, min_scaling, final_var, history_df
 
 
@@ -1100,7 +1104,11 @@ def run_rolling_backtest(
             rb_scaling.append(float(ge_scale * var_scale))
             trade_rows.extend(
                 _make_trade_rows(
-                    cast(pd.Timestamp, pd.Timestamp(date)), X.columns, w_current, w_new, period_exec_tc
+                    cast(pd.Timestamp, pd.Timestamp(date)),
+                    X.columns,
+                    w_current,
+                    w_new,
+                    period_exec_tc,
                 )
             )
 
@@ -1257,7 +1265,13 @@ def evaluate_weights(
             turnover[k] = float(np.sum(np.abs(dw)))
             exec_tc[k] = tc_model(dw, w_prev, w_now) if tc_model else 0.0
             trade_rows.extend(
-                _make_trade_rows(cast(pd.Timestamp, pd.Timestamp(d)), X.columns, w_prev, w_now, exec_tc[k])
+                _make_trade_rows(
+                    cast(pd.Timestamp, pd.Timestamp(d)),
+                    X.columns,
+                    w_prev,
+                    w_now,
+                    exec_tc[k],
+                )
             )
             rb_weights.append(w_now.copy())
             w_prev = w_now
@@ -1749,90 +1763,6 @@ def benchmark_result_table(results: Dict[str, ReplicaResult]) -> pd.DataFrame:
     )
 
 
-def assumption_register() -> pd.DataFrame:
-    """Visible model/data/cost assumptions for audit and presentation."""
-    rows = [
-        {
-            "area": "Data",
-            "assumption": "Weekly returns are computed from the supplied Bloomberg-style price panel.",
-            "implementation": "pct_change on cleaned positive prices; rows with missing required returns are removed.",
-            "risk_if_wrong": "Bad data would directly affect weights, TE, VaR and transaction-cost estimates.",
-            "control": "Strict required-column checks, non-positive price rejection and input hash exported with results.",
-        },
-        {
-            "area": "Data",
-            "assumption": "Prices are not forward-filled before return calculation.",
-            "implementation": "clean_price_panel deliberately avoids forward fill.",
-            "risk_if_wrong": "Forward fill can create artificial zero returns and understate volatility and VaR.",
-            "control": "Documented in code and notebook; NaN rows are removed only after return construction.",
-        },
-        {
-            "area": "Data",
-            "assumption": "Extreme returns are flagged for review, not automatically deleted.",
-            "implementation": "market_stress_outlier_audit uses robust z-scores and labels crisis/stress windows.",
-            "risk_if_wrong": "Deleting genuine market stress would overstate replication quality and understate risk.",
-            "control": "Only invalid prices/missing required returns are removed; valid extreme market observations remain in the backtest.",
-        },
-        {
-            "area": "Model",
-            "assumption": "Ridge is a transparent control model, not the final portfolio claim.",
-            "implementation": "Rolling two-year fit, monthly rebalance, fit_intercept=False.",
-            "risk_if_wrong": "Interpreting it as the final best model would overstate the modelling conclusion.",
-            "control": "Benchmark and validation tables separate pipeline validation from final strategy selection.",
-        },
-        {
-            "area": "Model",
-            "assumption": "Cost-aware optimisation is included as a benchmark control, not as an over-claimed final trading system.",
-            "implementation": "build_optimizer_weights supports constrained TE and L1 turnover-penalised weight updates.",
-            "risk_if_wrong": "Ignoring turnover during weight construction can make a model look good before costs but weak after costs.",
-            "control": "Leaderboard compares ordinary rolling estimators with constrained and cost-aware optimizer controls.",
-        },
-        {
-            "area": "Backtest",
-            "assumption": "No look-ahead is allowed.",
-            "implementation": "At week t, the model is fitted only on observations before t.",
-            "risk_if_wrong": "Look-ahead would overstate performance and reduce apparent tracking error.",
-            "control": "run_rolling_backtest uses explicit rolling train windows and rebalance dates.",
-        },
-        {
-            "area": "Exposure",
-            "assumption": "Futures weights are notional exposures, not cash allocations.",
-            "implementation": "Gross exposure equals sum(abs(weights)); GE cap is enforced before PnL.",
-            "risk_if_wrong": "Risk could be understated if weights were treated like long-only cash shares.",
-            "control": "GE time series, breach counts, long/short/net exposure dashboard.",
-        },
-        {
-            "area": "Risk",
-            "assumption": "One-month 99% Gaussian VaR is the hard portfolio-risk control.",
-            "implementation": "VaR is projected on the recent training history and weights are scaled if needed.",
-            "risk_if_wrong": "Gaussian VaR can miss tail risk and regime shifts.",
-            "control": "Historical VaR, Expected Shortfall and stress-window diagnostics are also reported.",
-        },
-        {
-            "area": "Transaction costs",
-            "assumption": "5 bps per unit one-way turnover is the baseline cost stress.",
-            "implementation": "FlatBpsTC charges cost = bps × sum(abs(delta weights)).",
-            "risk_if_wrong": "Too-low costs would inflate net IR; too-high costs would penalise high-turnover models.",
-            "control": "Cost sensitivity from 0 to 20 bps plus half-spread/impact model.",
-        },
-        {
-            "area": "Transaction costs",
-            "assumption": "ADV-based costs are illustrative unless real futures ADV data is supplied.",
-            "implementation": "TieredADVTC is available as a stress-test framework, not used as calibrated baseline.",
-            "risk_if_wrong": "A calibrated liquidity conclusion cannot be claimed from placeholder ADV values.",
-            "control": "Notebook labels the ADV model as illustrative only.",
-        },
-        {
-            "area": "Handoff",
-            "assumption": "All candidate strategies can be evaluated through the same contract.",
-            "implementation": "Either run_rolling_backtest(model_factory) or evaluate_weights(weights_history).",
-            "risk_if_wrong": "Strategies would not be comparable if dates, costs, risk limits or metrics differ.",
-            "control": "validate_project_interface, exported CSV/JSON/pickle artifacts and contract tests.",
-        },
-    ]
-    return pd.DataFrame(rows)
-
-
 def cost_sensitivity_sweep(
     X: pd.DataFrame,
     y: pd.Series,
@@ -1994,15 +1924,29 @@ def export_result_artifacts(
 
 
 PERCENT_METRIC_COLS: Tuple[str, ...] = (
-    "TE", "net_TE", "VaR", "max_VaR",
-    "max_drawdown", "max_drawdown_net",
-    "cost_drag", "ann_ret", "ann_ret_net",
+    "TE",
+    "net_TE",
+    "VaR",
+    "max_VaR",
+    "max_drawdown",
+    "max_drawdown_net",
+    "cost_drag",
+    "ann_ret",
+    "ann_ret_net",
 )
 RATIO_METRIC_COLS: Tuple[str, ...] = (
-    "IR", "net_IR", "rho", "beta_to_target",
+    "IR",
+    "net_IR",
+    "rho",
+    "beta_to_target",
 )
 MULTIPLE_METRIC_COLS: Tuple[str, ...] = (
-    "GE", "GE_mean", "max_GE", "annual_turnover", "weekly_turnover", "turnover",
+    "GE",
+    "GE_mean",
+    "max_GE",
+    "annual_turnover",
+    "weekly_turnover",
+    "turnover",
 )
 BPS_METRIC_COLS: Tuple[str, ...] = ("tc_total_bps",)
 
@@ -2021,12 +1965,17 @@ def metrics_row_from_replica(
     m = res.metrics
     return {
         "model": label,
-        "IR": m["IR"], "TE": m["TE"], "rho": m["rho"],
-        "GE_mean": m["GE"], "max_GE": m["max_GE"],
-        "VaR": m["VaR"], "max_VaR": m["max_VaR"],
+        "IR": m["IR"],
+        "TE": m["TE"],
+        "rho": m["rho"],
+        "GE_mean": m["GE"],
+        "max_GE": m["max_GE"],
+        "VaR": m["VaR"],
+        "max_VaR": m["max_VaR"],
         "annual_turnover": m["annual_turnover"],
         "tc_total_bps": m["tc_total_bps"],
-        "net_IR": m["net_IR"], "net_TE": m["net_TE"],
+        "net_IR": m["net_IR"],
+        "net_TE": m["net_TE"],
         **extra,
     }
 
@@ -2087,7 +2036,6 @@ __all__ = [
     "apply_ge_cap",
     "apply_var_cap_iterative",
     "asset_cost_attribution",
-    "assumption_register",
     "benchmark_result_table",
     "build_optimizer_weights",
     "build_replication_panel",

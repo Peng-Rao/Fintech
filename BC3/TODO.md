@@ -246,12 +246,7 @@ $$
 - [ ] Rolling train / out-of-sample predict with retrain cadence $\Delta t \in \{1, 4\}$ weeks (reuse M3.1's harness).
 - [ ] Device: `torch.device('cuda' if torch.cuda.is_available() else 'cpu')`; early stopping on validation $\mathrm{TE}$.
 
-### M5.5 Extension — PCA-compressed or attention-based features
-
-- [ ] **PCA variant:** compute top-$k$ principal components of the trailing futures-returns window and feed the score vector into the MLP.
-- [ ] **Attention variant (optional, stretch):** a small transformer that attends over the trailing 52-week feature matrix $\Phi_t \in \mathbb{R}^{52 \times n}$ instead of a flattened vector.
-
-### M5.6 Final consolidated comparison
+### M5.5 Final consolidated comparison
 
 - [ ] Load each member's `results/<track>.pkl` and produce one master table:
 
