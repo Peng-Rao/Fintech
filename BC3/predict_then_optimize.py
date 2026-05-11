@@ -185,14 +185,18 @@ def run_predict_then_optimize_backtest(
         mu_a = alpha_from_linear_fit(alpha_factory, Xa_tr, y_tr)
         Sigma_a = shrunk_covariance(Xa_tr, po_config.use_lw_shrinkage)
 
+        # Annualize the covariance matrix. The default risk_aversion=2.0 and transaction
+        # cost penalties are calibrated for annualized variance.
+        Sigma_ann = 52.0 * Sigma_a
+
         # Transform the linear-model coefficients (which are optimal unconstrained weights)
         # into the implied 'mu' vector for the standard mean-variance objective:
         # FOC: mu - lambda * Sigma * w = 0  => mu = lambda * Sigma * w_opt
-        implied_mu = po_config.risk_aversion * (Sigma_a @ mu_a)
+        implied_mu = po_config.risk_aversion * (Sigma_ann @ mu_a)
 
         w_a = solve_po(
             implied_mu,
-            Sigma_a,
+            Sigma_ann,
             w_prev[active],
             risk_aversion=po_config.risk_aversion,
             tc_bps=po_config.tc_bps,
