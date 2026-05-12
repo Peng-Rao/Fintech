@@ -287,108 +287,6 @@ def data_quality_report(
     }
 
 
-def market_stress_outlier_audit(
-    X: pd.DataFrame,
-    y: pd.Series,
-    *,
-    robust_z_threshold: float = 5.0,
-    top_n: int = 25,
-    stress_windows: Optional[Dict[str, Tuple[str, str]]] = None,
-) -> Dict[str, pd.DataFrame]:
-    """Flag extreme weekly returns without deleting valid market observations.
-
-    The audit uses a robust z-score based on the median absolute deviation (MAD).
-    Observations are flagged when |robust_z| exceeds ``robust_z_threshold``.
-    This is a diagnostic layer, not an automatic deletion rule: finance data often
-    contains genuine crisis observations, and removing them would make the
-    backtest unrealistically smooth.
-
-    Returns
-    -------
-    Dict with:
-    - asset_summary: counts and severity of flagged observations by series;
-    - top_observations: largest absolute robust-z observations with regime labels;
-    - robust_z: date × series robust-z panel for plots/review.
-    """
-    if robust_z_threshold <= 0:
-        raise ValueError("robust_z_threshold must be positive.")
-
-    panel = (
-        X.join(y.rename("Monster_Index"))
-        .replace([np.inf, -np.inf], np.nan)
-        .dropna(how="all")
-    )
-    median = panel.median()
-    mad = (panel - median).abs().median().replace(0, np.nan)
-    robust_z = 0.6745 * (panel - median) / mad
-    extreme_mask = robust_z.abs() >= robust_z_threshold
-
-    def _first_date(series: pd.Series, func: str) -> str:
-        clean = series.dropna()
-        if clean.empty:
-            return ""
-        idx = clean.idxmin() if func == "min" else clean.idxmax()
-        return pd.Timestamp(str(idx)).date().isoformat()
-
-    summary = pd.DataFrame(index=panel.columns)
-    summary["observations"] = panel.count()
-    summary["extreme_count"] = extreme_mask.sum().astype(int)
-    summary["extreme_pct"] = summary["extreme_count"] / summary["observations"].replace(
-        0, np.nan
-    )
-    summary["max_abs_robust_z"] = robust_z.abs().max()
-    summary["worst_weekly_return"] = panel.min()
-    summary["worst_week_date"] = [_first_date(panel[c], "min") for c in panel.columns]
-    summary["best_weekly_return"] = panel.max()
-    summary["best_week_date"] = [_first_date(panel[c], "max") for c in panel.columns]
-    summary["annualised_vol"] = panel.std() * np.sqrt(ANNUAL_FACTOR)
-    summary["skew"] = panel.skew()
-    summary["kurtosis"] = panel.kurt()
-    summary = summary.sort_values(
-        ["extreme_count", "max_abs_robust_z"], ascending=False
-    )
-
-    long = panel.stack().rename("weekly_return").to_frame()
-    long.index.names = ["date", "series"]
-    rz_long = robust_z.stack().rename("robust_z")
-    rz_long.index.names = ["date", "series"]
-    flagged = long.join(rz_long).dropna()
-    flagged = flagged[flagged["robust_z"].abs() >= robust_z_threshold].copy()
-    flagged["abs_robust_z"] = flagged["robust_z"].abs()
-
-    def _regime_label(date_like: Any) -> str:
-        if not stress_windows:
-            return "ordinary/non-labelled week"
-        d = pd.Timestamp(date_like)
-        for label, (start, end) in stress_windows.items():
-            if pd.Timestamp(start) <= d <= pd.Timestamp(end):
-                return label
-        return "ordinary/non-labelled week"
-
-    if not flagged.empty:
-        flagged = flagged.reset_index()
-        flagged["date"] = pd.to_datetime(flagged["date"]).dt.date.astype(str)
-        flagged["regime_label"] = flagged["date"].map(_regime_label)
-        flagged = flagged.sort_values("abs_robust_z", ascending=False).head(top_n)
-    else:
-        flagged = pd.DataFrame(
-            columns=[
-                "date",
-                "series",
-                "weekly_return",
-                "robust_z",
-                "abs_robust_z",
-                "regime_label",
-            ]
-        )
-
-    return {
-        "asset_summary": summary,
-        "top_observations": flagged,
-        "robust_z": robust_z,
-    }
-
-
 def hash_inputs(X: pd.DataFrame, y: pd.Series) -> str:
     """Deterministic short hash of X/y values, columns and date span."""
     h = hashlib.blake2b(digest_size=8)
@@ -1703,33 +1601,6 @@ def stress_window_diagnostics(
     return pd.DataFrame(rows).set_index("window")
 
 
-def tracking_error_failure_table(
-    result: ReplicaResult, *, top_n: int = 10
-) -> pd.DataFrame:
-    """Worst absolute weekly tracking-gap observations with portfolio context."""
-    active = result.replica_net - result.target
-    rows: List[Dict[str, Any]] = []
-    for d in active.abs().sort_values(ascending=False).head(top_n).index:
-        w = result.held_weights_history.loc[d]
-        top = w.abs().sort_values(ascending=False).head(3)
-        signed = [f"{asset}={w[asset]:+.3f}" for asset in top.index]
-        rows.append(
-            {
-                "date": pd.Timestamp(d).date().isoformat(),
-                "target_return": float(result.target.loc[d]),
-                "replica_net_return": float(result.replica_net.loc[d]),
-                "active_return": float(active.loc[d]),
-                "abs_active_return": float(abs(active.loc[d])),
-                "gross_exposure": float(result.gross_exposure.loc[d]),
-                "VaR_1m_99": float(result.var_series.loc[d]),
-                "turnover": float(result.turnover.loc[d]),
-                "transaction_cost": float(result.tc_per_period.loc[d]),
-                "largest_exposures": ", ".join(signed),
-            }
-        )
-    return pd.DataFrame(rows)
-
-
 def benchmark_result_table(results: Dict[str, ReplicaResult]) -> pd.DataFrame:
     """Compact comparison table for pipeline-validation benchmark models."""
     rows = []
@@ -2057,7 +1928,6 @@ __all__ = [
     "format_metrics_dataframe",
     "make_beta_scaled_single_future_weights",
     "make_static_ols_weights",
-    "market_stress_outlier_audit",
     "max_drawdown",
     "metrics_from_returns",
     "metrics_row_from_replica",
@@ -2074,6 +1944,5 @@ __all__ = [
     "stationary_block_bootstrap_ci",
     "stress_window_diagnostics",
     "tracking_error",
-    "tracking_error_failure_table",
     "validate_project_interface",
 ]

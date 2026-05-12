@@ -1,9 +1,8 @@
 """Deep-learning weight generator (notebook Part VI).
 
 Splits naturally into five layers:
-    1. Feature engineering — build_features (vanilla) and build_features_pca (PCA variant).
-       Both are leakage-safe: rolling-window PCA, trailing-window Ridge warm-start, and
-       a final .shift(1) on the full feature frame.
+    1. Feature engineering — build_features (trailing-window Ridge warm-start + lagged
+       returns/volatility/regime features, all leakage-safe via a final .shift(1)).
     2. Models                — WeightMLP.
     3. Loss & windowing      — make_supervised_windows, te_mse_loss, turnover_penalty,
                                annualized_te_from_weights, _drift_weights, project_var_cap.
@@ -24,7 +23,6 @@ import pandas as pd
 import torch
 import torch.nn as nn
 from scipy.stats import norm
-from sklearn.decomposition import PCA
 from sklearn.linear_model import Ridge
 from sklearn.preprocessing import MinMaxScaler
 
@@ -32,7 +30,6 @@ __all__ = [
     # Features
     "FeatureConfig",
     "build_features",
-    "build_features_pca",
     # Models
     "WeightMLP",
     # Windowing & loss
@@ -103,51 +100,6 @@ def build_features(
     for k in cfg.return_lookbacks:
         for c in X.columns:
             feats[f"ret_{k}w_{c}"] = _compounded_return(X[c], k)
-
-    for k in cfg.vol_lookbacks:
-        vol = X.rolling(k).std() * np.sqrt(52)
-        for c in X.columns:
-            feats[f"vol_{k}w_{c}"] = vol[c]
-
-    if cfg.use_regime:
-        mxwo_ret = data["MXWO Index"].pct_change().reindex(X.index)
-        bond_ret = data["LEGATRUU Index"].pct_change().reindex(X.index)
-        feats["regime_msci_12w"] = _compounded_return(mxwo_ret, 12)
-        feats["regime_bond_12w"] = _compounded_return(bond_ret, 12)
-        feats["regime_target_vol_12w"] = y.rolling(12).std() * np.sqrt(52)
-
-    if cfg.use_warmstart:
-        warm = _ridge_warmstart(X, y, cfg.warmstart_window, cfg.warmstart_alpha)
-        for c in warm.columns:
-            feats[c] = warm[c]
-
-    return pd.DataFrame(feats).shift(1).dropna()
-
-
-def build_features_pca(
-    X: pd.DataFrame,
-    y: pd.Series,
-    data: pd.DataFrame,
-    cfg: FeatureConfig = FeatureConfig(),
-    *,
-    n_components: int = 5,
-    pca_window: int = 52,
-) -> pd.DataFrame:
-    """PCA variant of build_features: the trailing-return block is replaced by the most recent
-    PCA-score vector of the last `pca_window` weeks of X.
-    """
-    feats: dict = {}
-
-    pca_cols = [f"pca_{i}" for i in range(n_components)]
-    pca_df = pd.DataFrame(index=X.index, columns=pca_cols, dtype=float)
-    Xv = X.values
-    for i in range(pca_window, len(X)):
-        Xw = Xv[i - pca_window : i]
-        Xw_c = Xw - Xw.mean(axis=0, keepdims=True)
-        scores = PCA(n_components=n_components).fit_transform(Xw_c)
-        pca_df.iloc[i] = scores[-1]
-    for c in pca_cols:
-        feats[c] = pca_df[c]
 
     for k in cfg.vol_lookbacks:
         vol = X.rolling(k).std() * np.sqrt(52)
