@@ -1551,56 +1551,6 @@ def rolling_risk_dashboard(result: ReplicaResult, window: int = 52) -> pd.DataFr
     )
 
 
-def stress_window_diagnostics(
-    result: ReplicaResult, windows: Dict[str, Tuple[str, str]], *, min_obs: int = 8
-) -> pd.DataFrame:
-    """Evaluate one result inside named historical windows.
-
-    Windows with fewer than min_obs evaluated weeks are kept but marked, because
-    that is more transparent than silently dropping stress periods.
-    """
-    rows: List[Dict[str, Any]] = []
-    for label, (start, end) in windows.items():
-        sub = result.restrict(start, end, new_name=f"{result.name}__{label}")
-        active = sub.replica_net - sub.target
-        rows.append(
-            {
-                "window": label,
-                "start": str(pd.Timestamp(start).date()),
-                "end": str(pd.Timestamp(end).date()),
-                "n_obs": int(len(sub.replica_net)),
-                "enough_data": bool(len(sub.replica_net) >= min_obs),
-                "rho": _safe_corr(sub.replica_net, sub.target),
-                "net_TE": tracking_error(active),
-                "net_IR": information_ratio(active),
-                "max_abs_weekly_tracking_gap": float(active.abs().max())
-                if len(active)
-                else float("nan"),
-                "net_max_drawdown": max_drawdown(sub.replica_net),
-                "target_max_drawdown": max_drawdown(sub.target),
-                "average_GE": float(sub.gross_exposure.mean())
-                if len(sub.gross_exposure)
-                else float("nan"),
-                "max_GE": float(sub.gross_exposure.max())
-                if len(sub.gross_exposure)
-                else float("nan"),
-                "average_VaR": float(sub.var_series.mean())
-                if len(sub.var_series)
-                else float("nan"),
-                "max_VaR": float(sub.var_series.max())
-                if len(sub.var_series)
-                else float("nan"),
-                "turnover": float(sub.turnover.sum())
-                if len(sub.turnover)
-                else float("nan"),
-                "tc_bps": float(sub.tc_per_period.sum() * 1e4)
-                if len(sub.tc_per_period)
-                else float("nan"),
-            }
-        )
-    return pd.DataFrame(rows).set_index("window")
-
-
 def benchmark_result_table(results: Dict[str, ReplicaResult]) -> pd.DataFrame:
     """Compact comparison table for pipeline-validation benchmark models."""
     rows = []
@@ -1942,7 +1892,6 @@ __all__ = [
     "save_result",
     "split_diagnostics",
     "stationary_block_bootstrap_ci",
-    "stress_window_diagnostics",
     "tracking_error",
     "validate_project_interface",
 ]
