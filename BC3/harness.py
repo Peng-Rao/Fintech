@@ -323,28 +323,6 @@ class FlatBpsTC:
         return f"Flat {self.bps:.1f} bps"
 
 
-@dataclass(frozen=True)
-class HalfSpreadPlusImpactTC:
-    """Half-spread plus square-root market-impact proxy.
-
-    This is not a calibrated execution model. It is a transparent stress model
-    to test whether a strategy survives more realistic, nonlinear cost pressure.
-    """
-
-    half_spread_bps: float = 2.0
-    impact_coef_bps: float = 8.0
-
-    def __call__(self, dw: np.ndarray, w_old: np.ndarray, w_new: np.ndarray) -> float:
-        a = np.abs(dw)
-        spread = self.half_spread_bps * a.sum() / 1e4
-        impact = self.impact_coef_bps * np.power(a, 1.5).sum() / 1e4
-        return float(spread + impact)
-
-    @property
-    def label(self) -> str:
-        return f"Half-spread {self.half_spread_bps:.1f}bps + impact {self.impact_coef_bps:.1f}"
-
-
 def gaussian_var(
     returns: Union[np.ndarray, pd.Series],
     conf: float = DEFAULT_VAR_CONF,
@@ -1847,7 +1825,6 @@ __all__ = [
     "DEFAULT_VAR_HORIZON_W",
     "FUTURES_COLS",
     "FlatBpsTC",
-    "HalfSpreadPlusImpactTC",
     "HarnessConfig",
     "ReplicaResult",
     "ScheduleType",
