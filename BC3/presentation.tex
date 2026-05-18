@@ -150,22 +150,161 @@ r^{\text{target}}_t = 0.50\,r^{\text{HFRX}}_t + 0.25\,r^{\text{MSCI World}}_t + 
 \medskip
 
 \textbf{Six base configurations (B1--B6):}
+
+We test several portfolio replication configurations by combining different rebalancing frequencies and leverage constraints.
+
+\textbf{Rebalancing frequencies:} 
 \[
-\Delta t \in \{1, 4, 13\}\;\text{wk} \;\times\; L \in \{1.0,\, 2.0\}
+\{Weekly, Monthly, Yearly\}\;
 \]
 
-\textbf{Crisis-window evaluation.} 2008-09\,$\to$\,2009-03 (GFC) and 2020-02\,$\to$\,2020-04 (COVID). The COVID drawdown is the binding test: every config beats the target on max-drawdown, but only the quarterly cadences keep TE bounded.
+\textbf{Leverage constraints:}
+\[
+\{1.0, 2.0\}\;
+\]
+
 \end{column}
 \begin{column}{0.48\textwidth}
 \centering
 \includegraphics[width=\linewidth]{p3_cstr_target_return_distribution.png}\\
 \vspace{2pt}
-\includegraphics[width=\linewidth]{p3_cstr_crisis_windows.png}
+\includegraphics[width=\linewidth]{BC3/scenarii.png}
 \end{column}
 \end{columns}
 \end{frame}
+% =============================================================
+\begin{frame}{Part III --- results of the different scenarios}
+
+\centering
+
+\includegraphics[width=0.82\linewidth]{BC3/rebalancing_results.png}
+
+\vspace{2pt}
+
+The best configuration is chosen based on the IR metric
+
+\vspace{2pt}
+
+\includegraphics[width=0.65\linewidth]{BC3/portfolio_weights_best_congig.png}
+
+\end{frame}
 
 % =============================================================
+\begin{frame}{Part III --- Crisis evolution}
+
+\begin{columns}[T]
+    
+    \begin{column}{0.46\textwidth}
+    
+    \textbf{Crisis-window evaluation}
+    
+    \vspace{6pt}
+    
+    \begin{itemize}
+        \item COVID period: 2020-02 to 2020-04.
+        \item Used as a stress-test window for the replication strategy.
+        \item All configurations improve the maximum drawdown relative to the target.
+        \item Quarterly rebalancing is the only cadence that keeps tracking error bounded.
+    \end{itemize}
+    
+    \end{column}
+    
+    \begin{column}{0.52\textwidth}
+    
+    \centering
+    \includegraphics[width=0.95\linewidth]{BC3/covid_crisis.png}
+    
+    \end{column}
+
+\end{columns}
+
+\end{frame}
+
+% =============================================================
+\begin{frame}{Part III --- And what about transaction costs?}
+
+\begin{columns}[c]
+
+    \begin{column}{0.46\textwidth}
+
+    \textbf{Selection logic}
+
+    \vspace{5pt}
+
+    Several configurations are compared using both performance and risk criteria.
+
+    \vspace{5pt}
+
+    \begin{itemize}
+        \item Gross IR measures performance before transaction costs.
+        \item Net IR measures performance after transaction costs.
+        \item Turnover captures the intensity of portfolio rebalancing.
+        \item Tracking error measures how closely the replica follows the target.
+    \end{itemize}
+
+    \vspace{5pt}
+
+    The final recommended configuration is selected as the one with the highest \textbf{Net IR}.
+
+    \end{column}
+
+    \begin{column}{0.52\textwidth}
+
+    \begin{center}
+        \includegraphics[width=0.95\linewidth]{BC3/p3_cstr_turnover_ir_bars.png}
+
+        \vspace{4pt}
+
+        {\footnotesize Turnover and Gross vs Net IR across configurations.}
+    \end{center}
+
+    \end{column}
+
+\end{columns}
+
+\end{frame}
+% =============================================================
+\begin{frame}{Part III --- Recommended portfolio composition}
+
+\begin{columns}[c]
+
+    \begin{column}{0.42\textwidth}
+
+    \textbf{Recommended configuration}
+
+    \vspace{5pt}
+
+    The selected configuration is the one maximizing the \textbf{Net Information Ratio}.
+
+    \vspace{6pt}
+
+    The portfolio composition is then analyzed through:
+
+    \begin{itemize}
+        \item the average weight of each asset;
+        \item the stability of each weight over time
+    \end{itemize}
+
+    \vspace{5pt}
+
+    \end{column}
+
+    \begin{column}{0.56\textwidth}
+
+    \begin{center}
+        \includegraphics[width=0.95\linewidth]{BC3/p3_cstr_best_config_weights_bars.png}
+
+        \vspace{4pt}
+
+        {\footnotesize Average weights and weight stability for the recommended configuration.}
+    \end{center}
+
+    \end{column}
+
+\end{columns}
+
+\end{frame}
+% ============================================================
 \begin{frame}{Part III --- predict-then-optimize (convex layer)}
 \textbf{Two-stage rebalance.}
 \begin{enumerate}
@@ -308,18 +447,6 @@ The gap to the next cluster (PO + Huber / OLS, $\rho \approx 0.85$) is narrow; M
 \end{itemize}
 \end{column}
 \end{columns}
-\end{frame}
-
-% =============================================================
-\begin{frame}{Findings}
-\begin{itemize}
-  \item \textbf{Methodology before models.} Part I's harness fixes rolling-window discipline, cost accounting, and the VaR / GE projection \emph{once}; every Part II--V model plugs into the same evaluation surface and lands in the same master table.
-  \item \textbf{Cadence sets the cost/fit trade-off.} Weekly rebalancing maximises tracking but pays the heaviest 5 bps drag; quarterly minimises drawdown but loses precision. The B1--B6 sweep makes the trade-off auditable.
-  \item \textbf{Long window beats reactive fitting.} 3-year rolling dominates 1-year on net IR across every linear model --- weekly data is too noisy to adapt aggressively.
-  \item \textbf{Kalman EM matches the static $\sigma_w = 10^{-3}$ grid point.} The regime-switching variant narrows TE in 2008 at the cost of turnover.
-  \item \textbf{The MLP wins net IR.} \texttt{NN\_dt4} delivers $\rho = 0.84$ at $\overline{\mathrm{GE}} \approx 1.0$ and $\bar T \approx 0.8\%$; without $\lambda_1 \lVert \Delta w \rVert_1$, NN variants over-trade and lose net IR.
-  \item \textbf{Test vs.\ val gap is regime, not overfit.} \texttt{train $\approx$ val $\ll$ test} across $\lambda_1$ values --- the test fold crosses COVID; the model is honest about this.
-\end{itemize}
 \end{frame}
 
 \end{document}
