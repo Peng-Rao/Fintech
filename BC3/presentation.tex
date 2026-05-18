@@ -6,22 +6,16 @@
 \usepackage{booktabs}
 \usepackage{array}
 \usepackage{xcolor}
+\usepackage{graphicx}
 \usepackage{tikz}
-\usetikzlibrary{positioning, arrows.meta, shapes.geometric, fit}
-\usepackage{listings}
+\usetikzlibrary{positioning, arrows.meta, shapes.geometric, fit, calc, backgrounds}
 
 \definecolor{accent}{RGB}{30, 90, 160}
+\definecolor{accent2}{RGB}{200, 80, 40}
+\definecolor{soft}{RGB}{235, 240, 248}
 \setbeamercolor{frametitle}{bg=accent, fg=white}
 
-\lstset{
-  basicstyle=\ttfamily\scriptsize,
-  keywordstyle=\color{accent}\bfseries,
-  commentstyle=\color{gray}\itshape,
-  stringstyle=\color{teal},
-  breaklines=true,
-  showstringspaces=false,
-  language=Python,
-}
+\graphicspath{{figures/}}
 
 \title{Cracking the Black Box}
 \subtitle{Portfolio Replica Strategy --- BC3 final deliverable}
@@ -51,8 +45,8 @@ r^{\text{target}}_t = 0.50\,r^{\text{HFRX}}_t + 0.25\,r^{\text{MSCI World}}_t + 
 \begin{column}{0.48\textwidth}
 \textbf{Constraints.}
 \begin{itemize}
-  \item Sample: weekly, Oct 2007 -- Apr 2021 ($\approx 705$ obs).
-  \item Gaussian VaR cap: $-\Phi^{-1}(0.01) \cdot \hat\sigma_w \cdot \sqrt{4} \le 8\%$.
+  \item Sample: weekly, Oct 2007 -- Apr 2021 ($704$ obs).
+  \item Gaussian VaR cap (1\%, 1-month) $\le 8\%$.
   \item Gross-exposure cap: $\sum_j \lvert w_j \rvert \le L$.
   \item Transaction cost: $\tau = 5$ bps on L1 turnover.
 \end{itemize}
@@ -61,239 +55,271 @@ r^{\text{target}}_t = 0.50\,r^{\text{HFRX}}_t + 0.25\,r^{\text{MSCI World}}_t + 
 \end{frame}
 
 % =============================================================
-\begin{frame}{Notebook structure --- seven Parts}
-\textbf{Methodological arc, not chronological.}
+\begin{frame}{Pipeline overview --- one harness, four model families}
+\centering
+\begin{tikzpicture}[
+    every node/.style={font=\scriptsize, align=center},
+    box/.style={draw, rounded corners=2pt, minimum height=0.8cm, minimum width=1.9cm, fill=soft, line width=0.4pt},
+    data/.style={draw, rounded corners=2pt, minimum height=0.7cm, minimum width=1.6cm, fill=accent!15, line width=0.4pt},
+    model/.style={draw, rounded corners=2pt, minimum height=0.7cm, minimum width=2.3cm, fill=accent!10, line width=0.4pt},
+    result/.style={draw, rounded corners=2pt, minimum height=0.85cm, minimum width=2.0cm, fill=accent2!15, line width=0.4pt},
+    arr/.style={-{Stealth[length=1.8mm]}, line width=0.4pt},
+  ]
+  % Left column: data flow
+  \node[data] (raw) {Bloomberg\\weekly prices};
+  \node[data, right=0.5cm of raw] (xy) {$(X,\,y)$ panel\\$704\times 11$};
+  \node[box, right=0.5cm of xy] (harness) {\textbf{harness.py}\\rolling fit + TC\\+ GE/VaR projection};
 
-\smallskip
-\begin{tabular}{@{}r@{\quad}l@{}}
-\toprule
-\textbf{Part} & \textbf{Content} \\
-\midrule
-I   & Setup, data loading, EDA on $(X, y)$ \\
-II  & Backtest harness, transaction-cost model, VaR/GE/IR/TE definitions \\
-III & Ridge control baseline + rebalancing cadence $\times$ leverage sweep \\
-IV  & Linear benchmark family via predict-then-optimize (OLS / Ridge / Lasso / EN / Huber) \\
-V   & Kalman filter / state-space (static, EM, regime-switching) \\
-VI  & Deep learning weight generator (MLP) \\
-VII & Consolidated comparison + recommended configuration \\
-\bottomrule
-\end{tabular}
+  % Middle column: four model families stacked vertically
+  \node[model, right=1.2cm of harness, yshift=1.6cm] (lin) {Part II --- Linear\\OLS/Ridge/Lasso/EN/Huber};
+  \node[model, below=0.25cm of lin] (po)  {Part III --- PO\\convex $\mu, \Sigma$};
+  \node[model, below=0.25cm of po] (kf) {Part IV --- Kalman\\static / EM / regime};
+  \node[model, below=0.25cm of kf] (nn) {Part V --- DL\\MLP weight generator};
+
+  % Right column: master table
+  \node[result, right=0.9cm of po, yshift=-0.55cm] (master) {Part VI\\Master table\\30 rows, net IR};
+
+  \draw[arr] (raw) -- (xy);
+  \draw[arr] (xy) -- (harness);
+  \draw[arr] (harness.east) -- (lin.west);
+  \draw[arr] (harness.east) -- (po.west);
+  \draw[arr] (harness.east) -- (kf.west);
+  \draw[arr] (harness.east) -- (nn.west);
+  \draw[arr] (lin.east) -- (master.west);
+  \draw[arr] (po.east) -- (master.west);
+  \draw[arr] (kf.east) -- (master.west);
+  \draw[arr] (nn.east) -- (master.west);
+\end{tikzpicture}
 
 \medskip
-\textbf{Data flow.}\\
-\texttt{prices} $\to$ $(X, y)$ panel $\to$ \texttt{harness.run\_rolling\_backtest} $\to$ \{Ridge, Linear PO, Kalman, NN\} $\to$ \texttt{results/*.pkl} $\to$ master table.
+\textbf{Shared contract.} Every model returns a \texttt{ReplicaResult}: \texttt{weights\_history}, \texttt{replica\_returns}, \texttt{target\_returns}, \texttt{metrics}. Part VI loads them all into one ranked leaderboard.
 \end{frame}
 
 % =============================================================
-\begin{frame}{Part II --- backtest methodology}
-\textbf{Rolling walk-forward.} At every rebalance week:
-\begin{itemize}
-  \item Fit on the trailing 104-week window.
-  \item Predict $w_t$; hold weights until the next rebalance.
-  \item No look-ahead --- the training slice ends strictly before evaluation.
-\end{itemize}
+\begin{frame}{Backtest methodology --- Part I}
+\textbf{Rolling walk-forward.} At every rebalance week $t$:
+\begin{enumerate}
+  \item \textbf{Fit} on $X[t{-}104:t],\, y[t{-}104:t]$ (no look-ahead --- $X[t],\, y[t]$ never seen).
+  \item \textbf{Project} onto the feasible set: gross cap $\sum_j |w_j| \le L$, then iterative shrinkage until $\mathrm{VaR}(w) \le 8\%$.
+  \item \textbf{Trade} $\Delta w_t = w^{\text{new}} - w^{\text{old}}$; \textbf{cost} $c_t = \tau \cdot \sum_j |\Delta w_{t,j}|$.
+  \item \textbf{Realise} $r^{\text{rep}}_t = w_t^\top r_t$; on non-rebalance weeks carry $w_{t-1}$ forward.
+\end{enumerate}
 
 \smallskip
 \textbf{Contract metrics.}
 \[
-\mathrm{TE} = \sqrt{52\,\mathrm{Var}(r^{\text{rep}}_t - y_t)}, \qquad
-\mathrm{IR} = \frac{52\,\mathbb{E}[r^{\text{rep}}_t - y_t]}{\mathrm{TE}}, \qquad
-\bar T = \mathbb{E}_t\!\Bigl[\textstyle\sum_j \lvert \Delta w_{t,j} \rvert\Bigr]
-\]
-
-\smallskip
-\textbf{Transaction-cost subtraction.} Costs hit on rebalance dates only:
-\[
-c_t = \tau \cdot \sum_{j=1}^{n} \lvert w_{t,j} - w_{t-1,j} \rvert, \qquad
+\mathrm{TE} = \sqrt{52\,\mathrm{Var}(r^{\text{rep}}_t - y_t)}, \quad
+\mathrm{IR} = \frac{52\,\mathbb{E}[r^{\text{rep}}_t - y_t]}{\mathrm{TE}}, \quad
 \mathrm{net\_IR} = \frac{52\,\mathbb{E}[r^{\text{rep}}_t - c_t - y_t]}{\mathrm{net\_TE}}
 \]
 
 \smallskip
-\textbf{Risk projection layer.} Gross-exposure cap first ($\sum|w_j| \le L$), then iterative historical-VaR shrinkage until $\mathrm{VaR}(w_t) \le 8\%$.
+\textbf{VaR fallback.} Jarque-Bera on the target rejects normality ($p \approx 0$); Gaussian VaR (4.14\%) understates the historical 1\%-quantile (5.96\%) --- the harness can fall back to a historical VaR projector.
 \end{frame}
 
 % =============================================================
-\begin{frame}{Part III --- Ridge control + constraint sweep}
-\textbf{Canonical control baseline.} Ridge with $\alpha = 0.01$, $\Delta t = 4$ weeks. Frictionless vs.\ net-of-cost comparison fixes the headline cost drag.
-
-\smallskip
-\textbf{Cadence $\times$ leverage sweep.} Six base configurations plus a 6-axis Cartesian grid:
-\[
-\Delta t \in \{1, 2, 4, 8, 12\},\quad L \in \{1.0, 1.5, 2.0\},\quad \alpha \in \{10^{-4},\,10^{-3},\,10^{-2}\},\quad \rho_{\text{EN}} \in \{0.2, 0.5, 0.8\}
-\]
-
-\smallskip
-\textbf{Constraint layer for every configuration:}
-\begin{itemize}
-  \item Fit MinMax-scaled ElasticNet on the trailing 104-week panel.
-  \item Project: $w \mapsto \Pi_{\mathcal{W}}(w)$ with $\mathcal{W} = \{w : \sum_j |w_j| \le L\}$.
-  \item Shrink iteratively until $\mathrm{VaR}_{\text{hist}}(w) \le 8\%$.
-\end{itemize}
-
-\smallskip
-\textbf{Composite ranking.} Z-score $\{\mathrm{IR},\, \mathrm{net\_IR},\, \rho,\, -\mathrm{TE},\, -\bar T,\, -\mathrm{MDD}\}$, average, sort.
-\end{frame}
-
-% =============================================================
-\begin{frame}{Part IV --- linear benchmark family}
-\textbf{Predict-then-optimize.} Each rebalance:
-\begin{enumerate}
-  \item \textbf{Alpha.} Fit a classical linear model on $(X_{\text{tr}}, y_{\text{tr}})$; extract $\mu = \mathrm{coef\_}$.
-  \item \textbf{Risk.} Ledoit--Wolf shrunken sample covariance $\Sigma$ (annualised).
-  \item \textbf{Optimize.} Convex problem (CVXPY):
-\end{enumerate}
-\vspace{-0.4em}
-\[
-\max_{w} \;\; \mu^{\top} w - \tfrac{1}{2}\lambda\, w^{\top}\Sigma w - \tau\,\lVert w - w_{t-1}\rVert_1
-\quad \text{s.t.} \quad \lVert w \rVert_1 \le L,\;\; \lvert w_j \rvert \le 0.5
-\]
-\vspace{-0.5em}
-
-\smallskip
-\textbf{Leaderboard sweep.}
-\[
-\bigl\{\text{OLS},\, \text{Ridge}_{\alpha},\, \text{Lasso}_{\alpha},\, \text{ElasticNet}_{(\alpha, \rho)},\, \text{Huber}_{\delta}\bigr\} \times \bigl\{\text{all-11},\, \text{top-5}\bigr\}
-\]
-
-\smallskip
-\textbf{Top-$K$ pre-selection.} At each rebalance, keep the $K$ futures with highest $\lvert \mathrm{corr}(r_j, y) \rvert$ \emph{computed inside the training window} --- no leakage.
-
-\smallskip
-\textbf{Sanity check.} With $\lambda = 2$, slack constraints, and no Ledoit--Wolf shrinkage, the convex layer recovers the OLS fit to within solver tolerance.
-\end{frame}
-
-% =============================================================
-\begin{frame}{Part V --- Kalman filter / state-space}
-\textbf{State-space model.} Random-walk weights, scalar return as observation:
-\[
-\begin{aligned}
-x_t &= x_{t-1} + B u_t, & u_t &\sim \mathcal{N}(0, I), &\quad B &= \sigma_w I \\
-y_t &= r_t^{\top} x_t + D \varepsilon_t, & \varepsilon_t &\sim \mathcal{N}(0, 1), &\quad D &= \hat\sigma_y
-\end{aligned}
-\]
-
-\smallskip
-\textbf{Three variants compared.}
-\begin{itemize}
-  \item \textbf{Static $\sigma_w$ grid.} $\sigma_w \in \{10^{-4},\, 10^{-3},\, 10^{-2}\}$; warm-started from Ridge on the first 52 weeks.
-  \item \textbf{EM-tuned noise.} \texttt{pykalman.KalmanFilter.em()} fits $(B, D)$ jointly, capped at 3 iterations (the $1$-obs / $11$-state system is under-identified at higher $n$).
-  \item \textbf{Regime-switching.} 2-state Gaussian HMM on rolling realised target volatility selects $\sigma_w \in \{\sigma_w^{\text{calm}},\, \sigma_w^{\text{stressed}}\}$.
-\end{itemize}
-
-\smallskip
-\textbf{Leakage discipline.} The HMM is fit on the 104-week warm-up window only and then \emph{frozen}; subsequent regime labels are produced by \texttt{.predict}, not refit. Without this, the HMM sees post-train data.
-
-\smallskip
-\textbf{Risk projection.} Same Gaussian VaR cap $\mathrm{VaR}(\hat x_t) \le 8\%$ applied after every filter update.
-\end{frame}
-
-% =============================================================
-\begin{frame}{Part VI --- deep learning weight generator}
-\textbf{End-to-end framing.} The network outputs the \emph{weights}, not the returns:
-\[
-w_t = f_\theta(\phi_t), \qquad r^{\text{rep}}_t = w_t^{\top} r_t.
-\]
-
-\textbf{Features $\phi_t$} (lagged by one step via \texttt{shift(1)} --- no contemporaneous information):
-\begin{itemize}
-  \item Trailing compounded returns at $k \in \{4, 12, 52\}$ weeks per asset.
-  \item Trailing realised volatility at $k \in \{12, 52\}$ weeks.
-  \item Regime indicators: 12-week MSCI World return, 12-week bond trend, 12-week target volatility.
-  \item Warm start: previous Ridge weight from a 52-week trailing fit ($\alpha = 10^{-3}$).
-\end{itemize}
-
-\textbf{Architecture.} \texttt{WeightMLP}: $\phi_t \in \mathbb{R}^{d_\phi} \to 64 \to 32 \to w_t \in \mathbb{R}^{11}$, ReLU + dropout $0.1$, optional gross-exposure projection inside the forward pass.
-\end{frame}
-
-% =============================================================
-\begin{frame}{Part VI --- loss, training, rolling backtest}
-\textbf{Loss --- forward-window tracking-error variance + turnover penalty:}
-\[
-\mathcal{L}(\theta) = \mathrm{Var}_{s \in [t,\, t+H-1]}\!\bigl(w_t^{\top} r_s - y_s\bigr) + \lambda\,\bigl\lVert \Delta w_t \bigr\rVert_1, \qquad H = 12,\;\; \lambda \in \{0, 10^{-3}, 10^{-2}\}
-\]
-
-\smallskip
-\textbf{Training regime.}
-\begin{itemize}
-  \item Chronological 60 / 20 / 20 split --- no shuffling across the boundary.
-  \item Adam, lr $10^{-3}$, weight decay $10^{-5}$, batch $64$, max $500$ epochs, patience $30$.
-  \item Early stopping on annualised validation TE.
-\end{itemize}
-
-\smallskip
-\textbf{Rolling out-of-sample backtest.} \texttt{run\_nn\_rolling\_backtest} retrains on the trailing 156-week window at each rebalance $\Delta t \in \{1, 4\}$, predicts $w_t$, applies the Gaussian VaR projection, and warm-starts the next fit from the previous state dict.
-
-\smallskip
-\textbf{Why variance, not MSE?} A constant tracking bias washes out under VaR rescaling; the variance directly targets the IR denominator.
-\end{frame}
-
-% =============================================================
-\begin{frame}{Part VII --- consolidated comparison}
-\textbf{Synthesis.} Each track persists its result as a pickle; Part VII loads them all and ranks by net IR:
-\[
-\bigl\{\text{Ridge control},\, \text{Linear PO}_*,\, \text{Kalman}_*,\, \text{Kalman EM},\, \text{Kalman regime},\, \text{NN}_{\Delta t=1},\, \text{NN}_{\Delta t=4}\bigr\}
-\]
-
-\textbf{Reported columns:}
-\[
-\{\mathrm{IR},\; \mathrm{net\_IR},\; \mathrm{TE},\; \rho,\; \overline{\mathrm{GE}},\; \bar T,\; \mathrm{VaR},\; \mathrm{cost\_drag},\; \mathrm{MDD}\}
-\]
-
-\smallskip
-\textbf{What the table answers.}
-\begin{itemize}
-  \item \textbf{Best IR / best $\rho$.} Joint signal selection plus rebalance discipline.
-  \item \textbf{Best net IR.} Captures the cost penalty for high-turnover models.
-  \item \textbf{Crisis survival (2008-09, 2020-02$\to$04).} Configurations that keep TE bounded and avoid VaR breaches when tails go fat.
-\end{itemize}
-
-\smallskip
-\textbf{Spotlight plots.} Cumulative return vs.\ target, rolling 26-week correlation, weights heatmap over time for the winning configuration.
-\end{frame}
-
-% =============================================================
-\begin{frame}{Reading the leaderboard}
-\textbf{What the analysis shows.}
-\begin{itemize}
-  \item \textbf{Cadence sets the cost/fit trade-off.} Weekly rebalancing maximises tracking quality but pays the heaviest 5 bps drag; quarterly rebalancing minimises drawdown but loses tracking precision. The constraint sweep makes the trade-off explicit.
-  \item \textbf{Long rolling window beats recent adaptation.} The 3-year window dominates 1-year on net IR for every linear model --- a stable signal beats reactive fitting on weekly data.
-  \item \textbf{Predict-then-optimize closes the constraint gap.} The convex layer applies the $L_1$-gross and per-asset $|w_j|$ caps inside the optimisation; Ridge with post-hoc rescaling pays a small TE premium for the same risk profile.
-  \item \textbf{Kalman + EM matches the static $\sigma_w = 10^{-3}$ grid point.} EM is a useful sanity check; the regime-switching variant narrows TE in 2008 at the cost of more turnover.
-  \item \textbf{The MLP rivals the linear leaderboard} when warm-started from Ridge and penalised on turnover; without $\lambda \lVert \Delta w_t \rVert_1$, NN variants over-trade and lose net IR.
-\end{itemize}
-\end{frame}
-
-% =============================================================
-\begin{frame}{Recommended configuration}
-\textbf{Deployable choice (composite-score winner).}
-\begin{itemize}
-  \item \textbf{Model:} PO + ElasticNet on top-5 futures (pre-selected by training-window correlation).
-  \item \textbf{Cadence:} $\Delta t = 4$ weeks --- monthly rebalancing balances tracking and turnover.
-  \item \textbf{Risk:} gross-exposure cap $L = 1.5$, iterative VaR cap $\le 8\%$.
-  \item \textbf{Transaction cost:} 5 bps on L1 turnover; budget $\tau \in \{2, 5, 10\}$ bps stress-tested.
-\end{itemize}
-
-\smallskip
-\textbf{Why this configuration.}
-\begin{itemize}
-  \item \textbf{Net IR survives the cost sweep.} Monthly cadence keeps $\bar T$ low; top-5 prunes redundant exposures.
-  \item \textbf{Crisis robustness.} Composite ranking weights MDD and TE alongside IR; the winner is consistent across the 2008 and 2020 windows.
-  \item \textbf{Interpretability.} The linear coefficients are portfolio weights --- the strategy is transparent for a regulatory audit.
-\end{itemize}
-\end{frame}
-
-% =============================================================
-\begin{frame}{Takeaways}
-\begin{itemize}
-  \item \textbf{Methodology before models.} The Part II harness fixes rolling-window discipline, transaction-cost accounting, and the VaR / GE projection layer \emph{once}; every Part III--VI model plugs into the same evaluation surface.
-  \item \textbf{Leakage discipline runs end-to-end.} Top-$K$ pre-selection inside the training window, HMM frozen on the warm-up slice, train-fold standardisation for the NN, $\texttt{shift(1)}$ on every lagged feature --- every fit-stage is closed against future data.
-  \item \textbf{Turnover discipline is non-optional.} Without explicit penalisation, every adaptive model (NN, regime-switching Kalman) over-trades and loses on net IR.
-  \item \textbf{Constraint sweep is the deployment lens.} Cadence and leverage choices dominate model choice once costs and risk caps are in play; the composite score makes the trade-off auditable.
-  \item \textbf{Single pickle contract.} \texttt{ReplicaResult} flows through every track unchanged --- that is what lets Part VII be a one-page comparison rather than five fragmented narratives.
-\end{itemize}
+\begin{frame}{Part II --- classical linear benchmark}
+\centering
+\includegraphics[width=0.92\textwidth]{p2_m2_3_ridge_vs_enet.png}\\[1pt]
+{\scriptsize Ridge vs.\ ElasticNet across matched $\alpha$ grid: TE flat in $\alpha$; ElasticNet's average gross exposure collapses once L1 starts zeroing coefficients at $\alpha \ge 10^{-3}$.}
 
 \medskip
-\centering\Large \textbf{Thank you --- questions?}
+\begin{columns}[T]
+\begin{column}{0.50\textwidth}
+\textbf{Sweep.} $\{$OLS, Ridge, Lasso, EN, Huber$\} \times \{\text{all-11},\,\text{top-5}\}$ --- single harness: 104-week window, $\Delta t = 4$, scale-only, GE cap 2, VaR cap 20\%.
+
+\smallskip
+\textbf{Top-$K$.} Keep the $K$ futures with highest $|\mathrm{corr}(r_j, y)|$ \emph{inside the training window} --- no leakage.
+\end{column}
+\begin{column}{0.50\textwidth}
+\textbf{Reading.}
+\begin{itemize}\setlength{\itemsep}{1pt}
+  \item Ridge / EN collapse to OLS at $\alpha < 10^{-3}$.
+  \item Top-5 pruning saves $\sim 4\times$ on average GE for a small TE premium.
+  \item Sparsity from Lasso buys turnover savings but loses on tracking precision.
+\end{itemize}
+\end{column}
+\end{columns}
+\end{frame}
+
+% =============================================================
+\begin{frame}{Part III --- portfolio constraints (post-hoc projection)}
+\begin{columns}[T]
+\begin{column}{0.50\textwidth}
+\textbf{Why projection matters.} Gaussian VaR is rejected by Jarque-Bera; the historical 1\%-quantile is fatter than $\mathcal{N}$. The harness projects $w$ onto a \emph{historical} VaR feasible set.
+\medskip
+
+\textbf{Six base configurations (B1--B6):}
+\[
+\Delta t \in \{1, 4, 13\}\;\text{wk} \;\times\; L \in \{1.0,\, 2.0\}
+\]
+
+\textbf{Crisis-window evaluation.} 2008-09\,$\to$\,2009-03 (GFC) and 2020-02\,$\to$\,2020-04 (COVID). The COVID drawdown is the binding test: every config beats the target on max-drawdown, but only the quarterly cadences keep TE bounded.
+\end{column}
+\begin{column}{0.48\textwidth}
+\centering
+\includegraphics[width=\linewidth]{p3_cstr_target_return_distribution.png}\\
+\vspace{2pt}
+\includegraphics[width=\linewidth]{p3_cstr_crisis_windows.png}
+\end{column}
+\end{columns}
+\end{frame}
+
+% =============================================================
+\begin{frame}{Part III --- predict-then-optimize (convex layer)}
+\textbf{Two-stage rebalance.}
+\begin{enumerate}
+  \item \textbf{Alpha.} Fit a classical linear model on $(X_{\text{tr}}, y_{\text{tr}})$; take $\mu = \texttt{coef\_}$.
+  \item \textbf{Risk.} Ledoit--Wolf shrunken sample covariance $\Sigma$ (annualised).
+  \item \textbf{Optimise} (CVXPY):
+\end{enumerate}
+\[
+\max_{w} \;\; \mu^{\top} w \;-\; \tfrac{1}{2}\lambda\, w^{\top}\Sigma\, w \;-\; \tau\,\lVert w - w_{t-1}\rVert_1
+\quad \text{s.t.} \quad \lVert w \rVert_1 \le L,\;\; \lvert w_j \rvert \le 0.5
+\]
+
+\smallskip
+\textbf{Sanity check.} With $\lambda = 2$, slack constraints, no LW shrinkage, the convex layer recovers OLS to within solver tolerance.
+
+\smallskip
+\textbf{Findings.}
+\begin{itemize}
+  \item Longest rolling window (3y) and modest Ridge dominate net IR on the leaderboard.
+  \item Huber is competitive only in the 2008/2020 windows.
+  \item Lasso's sparsity buys lower turnover but loses on TE.
+\end{itemize}
+\end{frame}
+
+% =============================================================
+\begin{frame}{Part IV --- Kalman filter / state-space}
+\begin{columns}[T]
+\begin{column}{0.50\textwidth}
+\textbf{Random-walk weights model.}
+\[
+\begin{aligned}
+x_t &= x_{t-1} + B\, u_t, & u_t &\sim \mathcal{N}(0, I_{11}) \\
+y_t &= r_t^{\top} x_t + D\, \varepsilon_t, & \varepsilon_t &\sim \mathcal{N}(0, 1)
+\end{aligned}
+\]
+$B = \sigma_w I$, $D = \hat\sigma_y$; Ridge warm-start on the first 52 weeks.
+\medskip
+
+\textbf{Variants:}
+\begin{itemize}
+  \item Static $\sigma_w$ grid $\{10^{-4}, 10^{-3}, 10^{-2}\}$.
+  \item EM-tuned $(B, D)$, capped at 3 iterations.
+  \item Double-adaptive: $\sigma_w$ and $D$ rescale with rolling vol.
+\end{itemize}
+
+\textbf{Leakage rule.} Filter outputs $\hat x_{t|t}$ use $y_t$, so we \emph{shift weights by one week} before evaluation.
+\end{column}
+\begin{column}{0.50\textwidth}
+\centering
+\includegraphics[width=\linewidth]{p4_kalman_adaptive_replication.png}\\[-2pt]
+{\scriptsize Adaptive Kalman replica vs target.}
+\end{column}
+\end{columns}
+\end{frame}
+
+% =============================================================
+\begin{frame}{Part V --- deep learning weight generator (architecture)}
+\textbf{End-to-end.} The network outputs the \emph{weights}, not the returns: $w_t = f_\theta(\phi_t),\; r^{\text{rep}}_t = w_t^\top r_t$.
+
+\centering
+\begin{tikzpicture}[
+    every node/.style={font=\scriptsize, align=center},
+    feat/.style={draw, rounded corners=2pt, fill=accent!10, minimum height=0.6cm, minimum width=2.0cm, line width=0.4pt},
+    layer/.style={draw, rounded corners=2pt, fill=accent!25, minimum height=0.9cm, minimum width=1.4cm, line width=0.4pt},
+    proj/.style={draw, rounded corners=2pt, fill=accent2!20, minimum height=0.9cm, minimum width=1.7cm, line width=0.4pt},
+    wout/.style={draw, rounded corners=2pt, fill=accent2!30, minimum height=0.9cm, minimum width=1.4cm, line width=0.4pt},
+    arr/.style={-{Stealth[length=2mm]}, line width=0.5pt},
+  ]
+  \node[feat] (r) {ret $\{4,12,52\}\text{w}$\\$33$};
+  \node[feat, below=0.15cm of r] (v) {vol $\{12,52\}\text{w}$\\$22$};
+  \node[feat, below=0.15cm of v] (reg) {regime\\$3$};
+  \node[feat, below=0.15cm of reg] (ws) {Ridge warm-start\\$11$};
+
+  \node[draw, dashed, rounded corners=2pt, fit=(r)(ws), inner sep=4pt, label={[font=\tiny]above:{$\phi_t \in \mathbb{R}^{69}$, lagged \texttt{shift(1)}}}] (phi) {};
+
+  \node[layer, right=1.4cm of v, yshift=-0.3cm] (h1) {Linear $\to 64$\\ReLU + drop$(0.1)$};
+  \node[layer, right=0.5cm of h1] (h2) {Linear $\to 32$\\ReLU + drop$(0.1)$};
+  \node[wout, right=0.5cm of h2] (w) {$w_t \in \mathbb{R}^{11}$};
+  \node[proj, right=0.5cm of w] (pr) {GE / VaR\\projection};
+
+  \draw[arr] (phi.east) -- (h1.west);
+  \draw[arr] (h1) -- (h2);
+  \draw[arr] (h2) -- (w);
+  \draw[arr] (w) -- (pr);
+\end{tikzpicture}
+
+\medskip
+\textbf{Loss --- forward-window MSE + turnover + budget:}
+\[
+\mathcal{L}(\theta) = \underbrace{\mathrm{MSE}_{s \in [t,\, t+H-1]}\!\bigl(w_t^{\top} r_s - y_s\bigr)}_{H = 12} + \lambda_1 \lVert \Delta w \rVert_1 + \lambda_2 \lVert \Delta w \rVert_2^{2} + \gamma\,(1^\top w_t - 1)^2
+\]
+\end{frame}
+
+% =============================================================
+\begin{frame}{Part VI --- consolidated leaderboard (top of 30 rows)}
+\centering\small
+\begin{tabular}{l r r r r r r}
+\toprule
+\textbf{Model} & \textbf{net\_IR} & \textbf{IR} & \textbf{$\rho$} & \textbf{TE} & \textbf{GE} & \textbf{$\bar T$} \\
+\midrule
+\textbf{NN $\Delta t = 4$}                & \textbf{+0.170} & +0.177 & 0.841 & 2.96\% & 1.02 & 0.008 \\
+NN $\Delta t = 1$                         & +0.135 & +0.143 & 0.843 & 2.93\% & 1.03 & 0.010 \\
+M3-PO $\mid$ Huber $\delta=1.35$ $\mid$ all-11   & +0.017 & +0.032 & 0.856 & 2.93\% & 1.28 & 0.017 \\
+M3-PO $\mid$ OLS $\mid$ all-11            & +0.017 & +0.032 & 0.853 & 2.95\% & 1.38 & 0.018 \\
+M2 $\mid$ Huber $\mid$ all-11             & -0.086 & -0.022 & 0.844 & 3.03\% & 1.59 & 0.075 \\
+Kalman (basic, $\sigma_w=10^{-3}$)        & -0.141 & -0.137 & 0.868 & 3.04\% & 0.59 & 0.005 \\
+M2 $\mid$ Lasso / EN $\mid$ top-5         & -0.185 & -0.173 & 0.828 & 3.18\% & 0.37 & 0.014 \\
+M3-Cstr $\mid$ B1 (weekly / 100\% cap)    & -0.468 & -0.461 & 0.765 & 3.91\% & 0.19 & 0.011 \\
+\bottomrule
+\end{tabular}
+
+\medskip
+\textbf{Headline.} \alert{NN $\Delta t = 4$ tops the leaderboard on net IR} with $\rho = 0.84$ at the lowest gross exposure and turnover of the positive-IR group.
+The gap to the next cluster (PO + Huber / OLS, $\rho \approx 0.85$) is narrow; M3-Cstr (post-hoc EN at 1y window) loses the most --- the constraint sweep without the right model class cannot rescue tracking quality.
+\end{frame}
+
+% =============================================================
+\begin{frame}{Best model spotlight --- cumulative \& weights}
+\begin{columns}[T]
+\begin{column}{0.50\textwidth}
+\centering
+\includegraphics[width=\linewidth]{p6_best_cumulative_returns.png}\\[-2pt]
+{\scriptsize NN $\Delta t = 4$ vs target, OOS 2011-11 $\to$ 2021-02.}
+\medskip
+
+\includegraphics[width=\linewidth]{p6_best_rolling_corr.png}\\[-2pt]
+{\scriptsize Rolling 26-week correlation; overall $\rho = 0.84$.}
+\end{column}
+\begin{column}{0.50\textwidth}
+\centering
+\includegraphics[width=\linewidth]{p6_best_weights_heatmap.png}\\[-2pt]
+{\scriptsize Asset weights over time (RdBu = long/short).}
+
+\smallskip
+\textbf{Reading the heatmap.}
+\begin{itemize}\setlength{\itemsep}{1pt}
+  \item Persistent long in rates (RX1, TY1) carries the bond leg.
+  \item Equity loadings (ES1, NQ1, VG1) rotate with the regime.
+  \item Sign-flips are mild --- the network respects the turnover penalty.
+\end{itemize}
+\end{column}
+\end{columns}
+\end{frame}
+
+% =============================================================
+\begin{frame}{Findings}
+\begin{itemize}
+  \item \textbf{Methodology before models.} Part I's harness fixes rolling-window discipline, cost accounting, and the VaR / GE projection \emph{once}; every Part II--V model plugs into the same evaluation surface and lands in the same master table.
+  \item \textbf{Cadence sets the cost/fit trade-off.} Weekly rebalancing maximises tracking but pays the heaviest 5 bps drag; quarterly minimises drawdown but loses precision. The B1--B6 sweep makes the trade-off auditable.
+  \item \textbf{Long window beats reactive fitting.} 3-year rolling dominates 1-year on net IR across every linear model --- weekly data is too noisy to adapt aggressively.
+  \item \textbf{Kalman EM matches the static $\sigma_w = 10^{-3}$ grid point.} The regime-switching variant narrows TE in 2008 at the cost of turnover.
+  \item \textbf{The MLP wins net IR.} \texttt{NN\_dt4} delivers $\rho = 0.84$ at $\overline{\mathrm{GE}} \approx 1.0$ and $\bar T \approx 0.8\%$; without $\lambda_1 \lVert \Delta w \rVert_1$, NN variants over-trade and lose net IR.
+  \item \textbf{Test vs.\ val gap is regime, not overfit.} \texttt{train $\approx$ val $\ll$ test} across $\lambda_1$ values --- the test fold crosses COVID; the model is honest about this.
+\end{itemize}
 \end{frame}
 
 \end{document}
