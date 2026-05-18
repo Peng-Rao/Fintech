@@ -16,7 +16,7 @@ has no global `device` dependency — drop the model on whatever device you like
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, Optional
+from typing import Optional
 
 import numpy as np
 import pandas as pd
