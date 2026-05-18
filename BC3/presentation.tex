@@ -17,9 +17,8 @@
 
 \graphicspath{{figures/}}
 
-\title{Cracking the Black Box}
-\subtitle{Portfolio Replica Strategy --- BC3 final deliverable}
-\institute{PoliMI Fintech --- Business Case 3}
+\title{BC3: Portfolio Replica}
+\author{Peng Rao, Maxime d'Aviau de Ternay, Qiao Zhaochen, Shourya Vashistha, Arnau Nomen}
 \date{}
 
 \begin{document}
@@ -73,11 +72,11 @@
 		% Middle column: four model families stacked vertically
 		\node[model, right=1.2cm of harness, yshift=1.6cm] (lin) {Part II --- Linear\\OLS/Ridge/Lasso/EN/Huber};
 		\node[model, below=0.25cm of lin] (po)  {Part III --- PO\\convex $\mu, \Sigma$};
-		\node[model, below=0.25cm of po] (kf) {Part IV --- Kalman\\static / EM / regime};
-		\node[model, below=0.25cm of kf] (nn) {Part V --- DL\\MLP weight generator};
+		\node[model, below=0.25cm of po] (kf) {Part IV --- Kalman filter};
+		\node[model, below=0.25cm of kf] (nn) {Part V --- MLP weight generator};
 
 		% Right column: master table
-		\node[result, right=0.9cm of po, yshift=-0.55cm] (master) {Part VI\\Master table\\30 rows, net IR};
+		\node[result, right=0.9cm of po, yshift=-0.55cm] (master) {Part VI Benchmark table};
 
 		\draw[arr] (raw) -- (xy);
 		\draw[arr] (xy) -- (harness);
@@ -90,9 +89,6 @@
 		\draw[arr] (kf.east) -- (master.west);
 		\draw[arr] (nn.east) -- (master.west);
 	\end{tikzpicture}
-
-	\medskip
-	\textbf{Shared contract.} Every model returns a \texttt{ReplicaResult}: \texttt{weights\_history}, \texttt{replica\_returns}, \texttt{target\_returns}, \texttt{metrics}. Part VI loads them all into one ranked leaderboard.
 \end{frame}
 
 % =============================================================
@@ -330,39 +326,122 @@
 \end{frame}
 
 % =============================================================
-\begin{frame}{Part IV --- Kalman filter / state-space}
+\begin{frame}{Part IV --- Kalman filter / state-space formulation}
+	{\footnotesize The state-space model treats portfolio weights as a latent random walk observed through realised returns.}
+	\[
+		\begin{aligned}
+			x_t & = A\, x_{t-1} + B\, u_t, \quad         & u_t           & \sim \mathcal{N}(0, I_{11}) &  & \text{(state: portfolio weights, random walk)} \\
+			y_t & = C_t\, x_t + D\, \varepsilon_t, \quad & \varepsilon_t & \sim \mathcal{N}(0, 1)      &  & \text{(observation: target return)}
+		\end{aligned}
+	\]
+	{\footnotesize $A = I_{11}$,\; $B = \sigma_w \cdot I_{11}$,\; $C_t = r_t^\top$,\; $D = \hat{\sigma}_y$ from the training window,\;
+		$x_t \in \mathbb{R}^{11}$ the latent weight vector,\; $y_t$ the scalar target return.
+		Ridge regression warm-start on the first 52 weeks; filter implemented from scratch.}
+
+	\vspace{2pt}
+	\textbf{Three variants:}
 	\begin{columns}[T]
 		\begin{column}{0.50\textwidth}
-			\textbf{Random-walk weights model.}
-			\[
-				\begin{aligned}
-					x_t & = x_{t-1} + B\, u_t,                  & u_t           & \sim \mathcal{N}(0, I_{11}) \\
-					y_t & = r_t^{\top} x_t + D\, \varepsilon_t, & \varepsilon_t & \sim \mathcal{N}(0, 1)
-				\end{aligned}
-			\]
-			$B = \sigma_w I$, $D = \hat\sigma_y$; Ridge warm-start on the first 52 weeks.
-			\medskip
-
-			\textbf{Variants:}
-			\begin{itemize}
-				\item Static $\sigma_w$ grid $\{10^{-4}, 10^{-3}, 10^{-2}\}$.
-				\item EM-tuned $(B, D)$, capped at 3 iterations.
-				\item Double-adaptive: $\sigma_w$ and $D$ rescale with rolling vol.
+			\footnotesize
+			\begin{itemize}\setlength{\itemsep}{1pt}
+				\item \textbf{Basic Kalman} --- fixed process noise $\sigma_w = 0.001$, fixed $R$, with a VaR guardrail.
+				\item \textbf{Tuned Kalman} --- grid search over $(Q, R_{\text{scale}}, P_0)$ with a Universal Replication Score, plus Q-sensitivity analysis.
+				\item \textbf{Double Adaptive Volatility} --- both $Q$ and $R$ scale dynamically with rolling volatility.
 			\end{itemize}
+		\end{column}
+		\begin{column}{0.48\textwidth}
+			\footnotesize
+			\textbf{Parameter Robustness.} $\pm20\%$ perturbation grid confirms structural soundness.
 
-			\textbf{Leakage rule.} Filter outputs $\hat x_{t|t}$ use $y_t$, so we \emph{shift weights by one week} before evaluation.
+			\vspace{2pt}
+			\textbf{Look-ahead discipline.} $\hat{x}_{t|t}$ uses $y_t$ (unavailable at the open of week $t$). We shift weights by one week: held weight at $t$ depends only on observations through $t{-}1$.
+		\end{column}
+	\end{columns}
+\end{frame}
+
+% =============================================================
+\begin{frame}{Part IV --- Kalman constraints \& optimisation score}
+	\begin{columns}[T]
+		\begin{column}{0.50\textwidth}
+			\textbf{1.\ Turnover Dampening}
+			\[
+				\hat{w}_t^{\text{damp}} = (1 - \alpha)\,\hat{w}_{t-1}^{\text{final}} + \alpha\, \hat{x}_{t|t}
+			\]
+			{\scriptsize Exponential smoothing on raw Kalman updates, structurally slowing weight adjustments to prevent excessive trading and reduce transaction costs.}
+
+			\smallskip
+			\textbf{2.\ Gross Exposure Cap}
+			{\scriptsize
+				\[
+					\hat{w}_t^{\text{gross}} =
+					\begin{cases}
+						\hat{w}_t^{\text{damp}} \dfrac{GE_{\text{cap}}}{\sum_i |\hat{w}_{i,t}^{\text{damp}}|}
+						                        & \sum_i |\hat{w}_{i,t}^{\text{damp}}| > GE_{\text{cap}} \\[4pt]
+						\hat{w}_t^{\text{damp}} & \text{otherwise}
+					\end{cases}
+				\]
+			}
+			{\scriptsize Proportional scale-down if the absolute sum of weights exceeds $GE_{\text{cap}} = 2.0$.}
 		\end{column}
 		\begin{column}{0.50\textwidth}
+			\textbf{3.\ VaR Guardrail}
+			{\footnotesize
+				\[
+					\hat{w}_t^{\text{final}} =
+					\begin{cases}
+						\hat{w}_t^{\text{gross}} \dfrac{VaR_{\text{cap}}}{\widehat{VaR}} & \widehat{VaR} > 8\% \\[4pt]
+						\hat{w}_t^{\text{gross}}                                         & \text{otherwise}
+					\end{cases}
+				\]
+			}{\scriptsize where $\widehat{VaR} = VaR_{1\%,\,4W}(\hat{w}_t^{\text{gross}})$.
+				Aggressively downweights if forward risk breaches $8\%$.}
+
+			\smallskip
+			\textbf{4.\ Replication Score}
+			{\footnotesize
+				\[
+					S = \rho(\mathbf{r}_R, \mathbf{r}_T) - 2\,TE_n - 0.5\,\overline{\Delta w} - 0.1\,MDD_n
+				\]
+			}{\scriptsize $TE_n$ = net TE, $\overline{\Delta w}$ = avg turnover, $MDD_n$ = net max drawdown.}
+		\end{column}
+	\end{columns}
+\end{frame}
+
+% =============================================================
+\begin{frame}{Part IV --- Adaptive Kalman: results comparison}
+	{\footnotesize \textbf{Double Adaptive Volatility Kalman} dynamically rescales $Q$ and $R$ using rolling volatility, widening in turbulent regimes and tightening in calm periods.}
+
+	\begin{columns}[T]
+		\begin{column}{0.44\textwidth}
+			\centering\small
+			\begin{tabular}{l r r}
+				\toprule
+				\textbf{Metric} & \textbf{Basic} & \textbf{Adaptive} \\
+				\midrule
+				net\_IR         & $-0.141$       & $\mathbf{-0.089}$ \\
+				IR              & $-0.137$       & $\mathbf{-0.083}$ \\
+				$\rho$          & $0.868$        & $\mathbf{0.879}$  \\
+				TE (net)        & $3.04\%$       & $\mathbf{2.89\%}$ \\
+				GE (avg)        & $0.59$         & $0.62$            \\
+				$\overline{T}$  & $0.005$        & $0.007$           \\
+				MDD (net)       & $14.2\%$       & $\mathbf{12.8\%}$ \\
+				\bottomrule
+			\end{tabular}
+
+			\medskip
+			{\footnotesize The adaptive variant improves across all risk-adjusted metrics: higher $\rho$, lower TE, smaller drawdown.}
+		\end{column}
+		\begin{column}{0.54\textwidth}
 			\centering
 			\includegraphics[width=\linewidth]{p4_kalman_adaptive_replication.png}\\[-2pt]
-			{\scriptsize Adaptive Kalman replica vs target.}
+			{\footnotesize Adaptive Kalman replica vs.\ target cumulative returns.}
 		\end{column}
 	\end{columns}
 \end{frame}
 
 % =============================================================
 \begin{frame}{Part V --- deep learning weight generator (architecture)}
-	\textbf{End-to-end.} The network outputs the \emph{weights}, not the returns: $w_t = f_\theta(\phi_t),\; r^{\text{rep}}_t = w_t^\top r_t$.
+	\textbf{End-to-end.} The network outputs the \emph{weights}: $w_t = f_\theta(\phi_t),\; r^{\text{rep}}_t = w_t^\top r_t$.
 
 	\centering
 	\begin{tikzpicture}[
