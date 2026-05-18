@@ -173,11 +173,11 @@ r^{\text{target}}_t = 0.50\,r^{\text{HFRX}}_t + 0.25\,r^{\text{MSCI World}}_t + 
 \end{column}
 \begin{column}{0.50\textwidth}
 \centering
-\includegraphics[height=0.36\textheight]{p2_m2_2_lasso_sparsity_vs_te.png}\\[-1pt]
+\includegraphics[width=\linewidth,height=0.30\textheight,keepaspectratio]{p2_m2_2_lasso_sparsity_vs_te.png}\\[-2pt]
 {\scriptsize Lasso sparsity vs.\ tracking error: zeroing too many weights inflates TE.}
-\smallskip
+\vspace{2pt}
 
-\includegraphics[height=0.36\textheight]{p2_m2_4_topk_te_turnover.png}\\[-1pt]
+\includegraphics[width=\linewidth,height=0.34\textheight,keepaspectratio]{p2_m2_4_topk_te_turnover.png}\\[-2pt]
 {\scriptsize Top-$K$: TE rises steeply below $K=5$; turnover drops monotonically.}
 \end{column}
 \end{columns}
@@ -233,31 +233,33 @@ r^{\text{target}}_t = 0.50\,r^{\text{HFRX}}_t + 0.25\,r^{\text{MSCI World}}_t + 
 
 % =============================================================
 \begin{frame}{Part IV --- Kalman filter / state-space formulation}
-{\small The state-space model treats portfolio weights as a latent random walk observed through realised returns.}
+{\footnotesize The state-space model treats portfolio weights as a latent random walk observed through realised returns.}
 \[
 \begin{aligned}
 x_t &= A\, x_{t-1} + B\, u_t, \quad & u_t &\sim \mathcal{N}(0, I_{11}) && \text{(state: portfolio weights, random walk)} \\
 y_t &= C_t\, x_t + D\, \varepsilon_t, \quad & \varepsilon_t &\sim \mathcal{N}(0, 1) && \text{(observation: target return)}
 \end{aligned}
 \]
-{\small $A = I_{11}$,\; $B = \sigma_w \cdot I_{11}$,\; $C_t = r_t^\top$,\; $D = \hat{\sigma}_y$ from the training window,\;
+{\footnotesize $A = I_{11}$,\; $B = \sigma_w \cdot I_{11}$,\; $C_t = r_t^\top$,\; $D = \hat{\sigma}_y$ from the training window,\;
 $x_t \in \mathbb{R}^{11}$ the latent weight vector,\; $y_t$ the scalar target return.
 Ridge regression warm-start on the first 52 weeks; filter implemented from scratch.}
 
-\smallskip
+\vspace{2pt}
 \textbf{Three variants:}
 \begin{columns}[T]
 \begin{column}{0.50\textwidth}
-\begin{itemize}\setlength{\itemsep}{2pt}
+\footnotesize
+\begin{itemize}\setlength{\itemsep}{1pt}
   \item \textbf{Basic Kalman} --- fixed process noise $\sigma_w = 0.001$, fixed $R$, with a VaR guardrail.
   \item \textbf{Tuned Kalman} --- grid search over $(Q, R_{\text{scale}}, P_0)$ with a Universal Replication Score, plus Q-sensitivity analysis.
   \item \textbf{Double Adaptive Volatility} --- both $Q$ and $R$ scale dynamically with rolling volatility.
 \end{itemize}
 \end{column}
 \begin{column}{0.48\textwidth}
+\footnotesize
 \textbf{Parameter Robustness.} $\pm20\%$ perturbation grid confirms structural soundness.
 
-\smallskip
+\vspace{2pt}
 \textbf{Look-ahead discipline.} $\hat{x}_{t|t}$ uses $y_t$ (unavailable at the open of week $t$). We shift weights by one week: held weight at $t$ depends only on observations through $t{-}1$.
 \end{column}
 \end{columns}
@@ -275,16 +277,27 @@ Ridge regression warm-start on the first 52 weeks; filter implemented from scrat
 
 \smallskip
 \textbf{2.\ Gross Exposure Cap}
+{\scriptsize
 \[
-\hat{w}_t^{\text{gross}} = \begin{cases} \hat{w}_t^{\text{damp}} \cdot \dfrac{GE_{\text{cap}}}{\sum_{i} |\hat{w}_{i,t}^{\text{damp}}|} & \text{if } \sum_{i} |\hat{w}_{i,t}^{\text{damp}}| > GE_{\text{cap}} \\[4pt] \hat{w}_t^{\text{damp}} & \text{otherwise} \end{cases}
+\hat{w}_t^{\text{gross}} =
+\begin{cases}
+\hat{w}_t^{\text{damp}} \dfrac{GE_{\text{cap}}}{\sum_i |\hat{w}_{i,t}^{\text{damp}}|}
+  & \sum_i |\hat{w}_{i,t}^{\text{damp}}| > GE_{\text{cap}} \\[4pt]
+\hat{w}_t^{\text{damp}} & \text{otherwise}
+\end{cases}
 \]
+}
 {\scriptsize Proportional scale-down if the absolute sum of weights exceeds $GE_{\text{cap}} = 2.0$.}
 \end{column}
 \begin{column}{0.50\textwidth}
 \textbf{3.\ VaR Guardrail}
 {\footnotesize
 \[
-\hat{w}_t^{\text{final}} = \begin{cases} \hat{w}_t^{\text{gross}} \cdot \dfrac{VaR_{\text{cap}}}{\widehat{VaR}} & \text{if } \widehat{VaR} > 8\% \\[4pt] \hat{w}_t^{\text{gross}} & \text{otherwise} \end{cases}
+\hat{w}_t^{\text{final}} =
+\begin{cases}
+\hat{w}_t^{\text{gross}} \dfrac{VaR_{\text{cap}}}{\widehat{VaR}} & \widehat{VaR} > 8\% \\[4pt]
+\hat{w}_t^{\text{gross}} & \text{otherwise}
+\end{cases}
 \]
 }{\scriptsize where $\widehat{VaR} = VaR_{1\%,\,4W}(\hat{w}_t^{\text{gross}})$.
 Aggressively downweights if forward risk breaches $8\%$.}
@@ -302,7 +315,7 @@ S = \rho(\mathbf{r}_R, \mathbf{r}_T) - 2\,TE_n - 0.5\,\overline{\Delta w} - 0.1\
 
 % =============================================================
 \begin{frame}{Part IV --- Adaptive Kalman: results comparison}
-{\small \textbf{Double Adaptive Volatility Kalman} dynamically rescales both $Q$ (process noise) and $R$ (observation noise) using a rolling volatility estimate, allowing the filter to widen in turbulent regimes and tighten in calm periods --- improving tracking precision without manual re-tuning.}
+{\footnotesize \textbf{Double Adaptive Volatility Kalman} dynamically rescales both $Q$ and $R$ using rolling volatility, widening the filter in turbulent regimes and tightening it in calm periods.}
 
 \begin{columns}[T]
 \begin{column}{0.52\textwidth}
@@ -326,11 +339,11 @@ MDD (net)     & $14.2\%$ & $\mathbf{12.8\%}$ \\
 \end{column}
 \begin{column}{0.48\textwidth}
 \centering
-\includegraphics[width=\linewidth]{p4_kalman_adaptive_replication.png}\\[-2pt]
+\includegraphics[width=\linewidth,height=0.31\textheight,keepaspectratio]{p4_kalman_adaptive_replication.png}\\[-2pt]
 {\scriptsize Adaptive Kalman replica vs.\ target cumulative returns.}
 
-\smallskip
-\includegraphics[width=\linewidth]{p4_kalman_basic_replication.png}\\[-2pt]
+\vspace{2pt}
+\includegraphics[width=\linewidth,height=0.31\textheight,keepaspectratio]{p4_kalman_basic_replication.png}\\[-2pt]
 {\scriptsize Basic Kalman replica vs.\ target (reference).}
 \end{column}
 \end{columns}
