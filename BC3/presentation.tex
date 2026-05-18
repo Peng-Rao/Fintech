@@ -315,32 +315,36 @@
 
 % =============================================================
 \begin{frame}{Part IV --- Adaptive Kalman: results comparison}
-	{\footnotesize \textbf{Double Adaptive Volatility Kalman} dynamically rescales both $Q$ and $R$ using rolling volatility, widening the filter in turbulent regimes and tightening it in calm periods.}
-
 	\begin{columns}[T]
-		\begin{column}{0.52\textwidth}
+		\begin{column}{0.51\textwidth}
 			\centering\scriptsize
-			\begin{tabular}{l r r r r}
+			\setlength{\tabcolsep}{2.6pt}
+			\renewcommand{\arraystretch}{1.04}
+			\begin{tabular}{l r r r}
 				\toprule
-				\textbf{Metric} & \textbf{Basic} & \textbf{Adaptive} \\
+				\textbf{Metric} & \textbf{Target} & \textbf{Basic Kalman} & \textbf{Adaptive Kalman} \\
 				\midrule
-				net\_IR         & $-0.141$       & $\mathbf{-0.089}$ \\
-				IR              & $-0.137$       & $\mathbf{-0.083}$ \\
-				$\rho$          & $0.868$        & $\mathbf{0.879}$  \\
-				TE (net)        & $3.04\%$       & $\mathbf{2.89\%}$ \\
-				GE (avg)        & $0.59$         & $0.62$            \\
-				$\overline{T}$  & $0.005$        & $0.007$           \\
-				MDD (net)       & $14.2\%$       & $\mathbf{12.8\%}$ \\
+				Ann. Return     & $4.52\%$       & $4.06\%$            & $\mathbf{4.20\%}$ \\
+				Ann. Volatility & $6.11\%$       & $5.64\%$            & $\mathbf{5.55\%}$ \\
+				Sharpe          & $0.74$         & $0.72$              & $\mathbf{0.76}$   \\
+				Max Drawdown    & $13.35\%$      & $9.30\%$            & $\mathbf{8.81\%}$ \\
+				Tracking Error  & N/A            & $3.11\%$            & $\mathbf{3.04\%}$ \\
+				Info. Ratio     & N/A            & $-0.1491$           & $\mathbf{-0.1046}$ \\
+				Correlation     & N/A            & $0.8633$            & $\mathbf{0.8684}$ \\
+				Avg Turnover    & N/A            & $0.96\%$            & $\mathbf{0.55\%}$ \\
+				Avg Gross Exp.  & N/A            & $0.8559$            & $\mathbf{0.6278}$ \\
+				Avg VaR         & N/A            & $3.61\%$            & $\mathbf{3.57\%}$ \\
+				Cost Drag       & N/A            & $0.02\%$            & $\mathbf{0.01\%}$ \\
 				\bottomrule
 			\end{tabular}
 
-			\medskip
-			{\scriptsize The adaptive variant improves across all risk-adjusted metrics: higher correlation, lower TE, and smaller drawdown, at a modest cost in turnover and gross exposure.}
+			\vspace{4pt}
+			{\footnotesize Adaptive improves return, TE, drawdown, turnover, and gross exposure.}
 		\end{column}
 		\begin{column}{0.48\textwidth}
 			\centering
-			\includegraphics[width=\linewidth,height=0.31\textheight,keepaspectratio]{p4_kalman_adaptive_replication.png}\\[-2pt]
-			{\scriptsize Adaptive Kalman replica vs.\ target cumulative returns.}
+			\includegraphics[width=\linewidth,height=0.68\textheight,keepaspectratio]{p4_kalman_adaptive_replication.png}\\[-2pt]
+			{\footnotesize Adaptive Kalman replica vs.\ target cumulative returns.}
 		\end{column}
 	\end{columns}
 \end{frame}
