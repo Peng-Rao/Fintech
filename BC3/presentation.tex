@@ -139,6 +139,45 @@
 \end{frame}
 
 % =============================================================
+\begin{frame}{Part II --- why these modelling choices?}
+	\begin{columns}[T]
+		\begin{column}{0.44\textwidth}
+			{\footnotesize
+				\begin{enumerate}\setlength{\itemsep}{4pt}
+					\item \textbf{Lasso \& sparsity.}
+					      $L_1$ drives weights to zero, cutting active assets \& turnover.
+					      \emph{But} excessive sparsity underfits --- too few futures cannot
+					      track a multi-asset target.
+
+					\item \textbf{Top-$K$ selection.}
+					      Removing low-corr futures reduces exposure \& stabilises turnover.
+					      \emph{But} too small a $K$ discards useful signal with the noise.
+
+					\item \textbf{Huber robust loss.}
+					      Down-weighting outliers limits crisis-month damage.
+					      \emph{But} the $\delta$ that protects in 2008/2020 can lag in calm regimes.
+
+					\item \textbf{Ridge / ElasticNet.}
+					      Moderate $L_2$ shrinkage is strictly more stable than OLS.
+					      \emph{But} the gain vanishes at $\alpha < 10^{-3}$.
+				\end{enumerate}
+			}
+		\end{column}
+		\begin{column}{0.54\textwidth}
+			\centering
+			\includegraphics[width=\linewidth,height=0.35\textheight,keepaspectratio]{p2_m2_2_lasso_sparsity_vs_te.png}
+
+			{\scriptsize\raggedright Lasso sparsity vs.\ tracking error: zeroing too many weights inflates TE.\par}
+			\medskip
+
+			\includegraphics[width=\linewidth,height=0.42\textheight,keepaspectratio]{p2_m2_4_topk_te_turnover.png}
+
+			{\scriptsize\raggedright Top-$K$: TE rises steeply below $K=5$; turnover drops monotonically.\par}
+		\end{column}
+	\end{columns}
+\end{frame}
+
+% =============================================================
 \begin{frame}{Part III --- portfolio constraints (post-hoc projection)}
 	\begin{columns}[T]
 		\begin{column}{0.50\textwidth}
