@@ -1,0 +1,144 @@
+\documentclass[10pt,aspectratio=169]{beamer}
+
+\usetheme{metropolis}
+\usepackage{booktabs}
+\usepackage{amsmath}
+\usepackage{xcolor}
+
+\definecolor{riskon}{HTML}{4F7A4A}
+\definecolor{riskoff}{HTML}{B23A3A}
+\definecolor{accent}{HTML}{E8743B}
+
+\title{Detecting Abnormal Markets}
+\subtitle{Early Warning Systems with Deep Anomaly Detection}
+\date{\today}
+\author{Peng Rao, Maxime d'Aviau de Ternay, Qiao Zhaochen, Shourya Vashistha, Arnau Nomen}
+\institute{Politecnico di Milano}
+
+\begin{document}
+
+\maketitle
+
+\begin{frame}{Why this matters}
+	\textbf{Markets crash often enough to matter} -- 1929, 2000, 2008, 2020 \dots
+	\vspace{0.6em}
+
+	\textbf{Missing the 10 worst days vs.\ buy-and-hold S\&P 500 (1927--2015):}
+	\begin{center}
+		\begin{tabular}{lr}
+			\toprule
+			Strategy                & Growth of \$1      \\
+			\midrule
+			Total cumulative return & \$115.40           \\
+			Miss the 10 worst days  & \$362.01           \\
+			Miss the 10 best days   & \phantom{0}\$38.28 \\
+			\bottomrule
+		\end{tabular}
+	\end{center}
+	\vspace{0.4em}
+
+	\begin{alertblock}{Tail events cluster}
+		Frequency and cross-asset correlations of simultaneous heavy losses keep rising.
+		Diversification fails exactly when you need it most.
+	\end{alertblock}
+\end{frame}
+
+\begin{frame}{The problem: risk-on $\rightarrow$ risk-off}
+	\begin{columns}[T,onlytextwidth]
+		\column{0.48\textwidth}
+		\begin{block}{\color{riskon}\textbf{Risk-on}}
+			Investors are confident. They bid up equities, credit, EM debt, commodities. \\[0.3em]
+			Volatility is low. Spreads compress. Capital flows toward growth.
+		\end{block}
+		\column{0.48\textwidth}
+		\begin{block}{\color{riskoff}\textbf{Risk-off}}
+			Investors are scared. They flee to cash, short-term govies, gold, CHF, JPY. \\[0.3em]
+			Volatility spikes. Correlations surge. This is systemic risk.
+		\end{block}
+	\end{columns}
+	\vspace{0.6em}
+	\begin{itemize}
+		\item We do not need to \emph{forecast} the crash -- we need to \emph{nowcast} the transition.
+		\item Goal: detect the green-to-red turn as early as possible.
+	\end{itemize}
+\end{frame}
+
+\begin{frame}{Solution: Early Warning Systems}
+	\begin{itemize}
+		\item Treat \textbf{normal markets} as the inlier distribution and \textbf{stress regimes} as anomalies.
+		\item Train novelty detectors on the normal samples only; raise a defensive flag when the anomaly score crosses a threshold.
+		\item Why this framing beats outright crash prediction:
+		      \begin{itemize}
+			      \item No need to label every crisis type ex ante.
+			      \item The model scores the latest weekly observation in real time.
+			      \item It generalises -- a 2008-style stress and a 2020-style stress both look ``not normal''.
+		      \end{itemize}
+	\end{itemize}
+	\begin{alertblock}{Deployment}
+		A defensive flag rotates the portfolio into cash, short-term govies, gold, or other low-beta assets. Typical user: CIO, risk officer, wealth manager.
+	\end{alertblock}
+\end{frame}
+
+\begin{frame}{Data and business framing}
+	\begin{columns}[T,onlytextwidth]
+		\column{0.5\textwidth}
+		\textbf{Bloomberg weekly panel}
+		\begin{itemize}
+			\item Key equity \& bond indices (IG/HY, inflation-linked, mortgages)
+			\item Short / medium / long interest rates
+			\item Major FX, commodities, VIX
+			\item Economic Surprise, Baltic Dry
+			\item Binary label: \emph{normal} vs.\ \emph{abnormal}
+		\end{itemize}
+		\column{0.5\textwidth}
+		\textbf{Same model, two business cases}
+		\begin{itemize}
+			\item[\color{riskon}$\blacksquare$] \textbf{Risk management} -- reduce drawdown \\ \emph{(this work)}
+			\item[\color{riskoff}$\blacksquare$] Quant strategy -- generate alpha
+		\end{itemize}
+		\vspace{0.4em}
+		That choice drives data treatment, threshold tuning, and the evaluation metric we report.
+	\end{columns}
+\end{frame}
+
+\begin{frame}{Three deep novelty detectors}
+	All three are trained on \textbf{normal observations only}; high score $\Rightarrow$ defensive flag.
+	\begin{itemize}
+		\item \textbf{GAN} -- generator learns the normal manifold; two scoring heads
+		      \begin{itemize}
+			      \item Discriminator realism: \quad $s(x) = 1 - D_\text{prob}(x)$
+			      \item Reconstruction in latent space: \quad $s(x) = \min_z \lVert x - G(z) \rVert^2$
+		      \end{itemize}
+		\item \textbf{VAE} -- reconstruction error of a Gaussian-regularised latent space; KL-regularised encoder gives a smoother score.
+		\item \textbf{LSTM autoencoder} -- reconstructs a rolling window of standardised features, adding short-term temporal context.
+	\end{itemize}
+\end{frame}
+
+\begin{frame}{Threshold choice and evaluation}
+	\begin{block}{Threshold tuned on cross-validation}
+		Maximise $F_\beta$ with $\beta = 1.5$, subject to a precision floor of
+		$\min\!\bigl(0.7,\ \text{base rate} + 0.25\bigr)$.
+	\end{block}
+	Headline metrics for the risk officer:
+	\begin{itemize}
+		\item \textbf{Recall} -- fraction of real crises the detector would catch.
+		\item \textbf{PR-AUC} -- threshold-free summary that stays honest under heavy class imbalance.
+		\item \textbf{False-negative rate} -- a missed crisis is the expensive failure mode.
+	\end{itemize}
+	Precision, F1, ROC-AUC are reported for completeness but are not the primary lens: a defensive false alarm costs basis points; a missed crash costs a drawdown.
+\end{frame}
+
+\begin{frame}{Takeaway}
+	\begin{itemize}
+		\item Deep novelty detection turns a labelled crisis history into a real-time risk dial.
+		\item The risk-managed equity curve trims drawdown vs.\ buy-and-hold, with mild return drag in calm regimes -- the trade-off the risk-management user wants.
+		\item Recall-weighted thresholds keep the detector useful when crises are rare.
+		\item Next steps: ensemble the three scorers, add macro / credit-spread features, stress-test thresholds across regimes.
+	\end{itemize}
+	\vfill
+	\begin{center}
+		\Large \alert{Detect the transition. Act on it. Reduce drawdown.}
+	\end{center}
+\end{frame}
+
+\end{document}
