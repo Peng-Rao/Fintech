@@ -546,5 +546,7 @@ skills-lock.json
 .mcp.json
 .agents/
 .claude/
+.codex/
+
 
 results/

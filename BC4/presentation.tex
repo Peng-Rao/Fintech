@@ -4,15 +4,24 @@
 \usepackage{booktabs}
 \usepackage{amsmath}
 \usepackage{xcolor}
+\usepackage{graphicx}
 
 \definecolor{riskon}{HTML}{4F7A4A}
 \definecolor{riskoff}{HTML}{B23A3A}
 \definecolor{accent}{HTML}{E8743B}
 
+\newcommand{\metriccard}[3]{%
+	\begin{minipage}[t]{0.23\textwidth}
+		\textcolor{accent}{\scriptsize\textbf{#1}}\\[-0.1em]
+		{\Large\textbf{#2}}\\[-0.2em]
+		{\scriptsize #3}
+	\end{minipage}%
+}
+
 \title{Detecting Abnormal Markets}
 \subtitle{Early Warning Systems with Deep Anomaly Detection}
 \date{\today}
-\author{Peng Rao, Maxime d'Aviau de Ternay, Qiao Zhaochen, Shourya Vashistha, Arnau Nomen}
+\author[Peng Rao et al.]{\texorpdfstring{\scriptsize Peng Rao, Maxime d'Aviau de Ternay, Qiao Zhaochen,\\ Shourya Vashistha, Arnau Nomen}{Peng Rao et al.}}
 \institute{Politecnico di Milano}
 
 \begin{document}
@@ -128,17 +137,71 @@
 	Precision, F1, ROC-AUC are reported for completeness but are not the primary lens: a defensive false alarm costs basis points; a missed crash costs a drawdown.
 \end{frame}
 
-\begin{frame}{Takeaway}
-	\begin{itemize}
-		\item Deep novelty detection turns a labelled crisis history into a real-time risk dial.
-		\item The risk-managed equity curve trims drawdown vs.\ buy-and-hold, with mild return drag in calm regimes -- the trade-off the risk-management user wants.
-		\item Recall-weighted thresholds keep the detector useful when crises are rare.
-		\item Next steps: ensemble the three scorers, add macro / credit-spread features, stress-test thresholds across regimes.
-	\end{itemize}
-	\vfill
-	\begin{center}
-		\Large \alert{Detect the transition. Act on it. Reduce drawdown.}
-	\end{center}
+\begin{frame}{Out-of-sample detector results}
+	\vspace{-0.35em}
+	\metriccard{Best recall}{95.8\%}{LSTM autoencoder}
+	\hfill
+	\metriccard{Lowest missed-crisis rate}{4.2\%}{LSTM autoencoder}
+	\hfill
+	\metriccard{Best PR-AUC}{86.2\%}{LSTM autoencoder}
+	\hfill
+	\metriccard{Best precision}{67.7\%}{GAN reconstruction}
+
+	\vspace{0.35em}
+	\includegraphics[width=\textwidth,height=0.39\textheight,keepaspectratio]{figures/09_model_metric_comparison.pdf}
+
+	\vspace{0.2em}
+	\begin{columns}[T,onlytextwidth]
+		\column{0.58\textwidth}
+		\scriptsize
+		\begin{tabular}{lrrrr}
+			\toprule
+			Model              & Recall          & FNR            & PR-AUC          & Precision       \\
+			\midrule
+			LSTM autoencoder   & \textbf{95.8\%} & \textbf{4.2\%} & \textbf{86.2\%} & 66.7\%          \\
+			VAE reconstruction & 80.7\%          & 19.3\%         & 79.5\%          & 67.1\%          \\
+			GAN reconstruction & 73.9\%          & 26.1\%         & 79.7\%          & \textbf{67.7\%} \\
+			GAN discriminator  & 31.9\%          & 68.1\%         & 61.0\%          & 61.3\%          \\
+			\bottomrule
+		\end{tabular}
+
+		\column{0.38\textwidth}
+		\small
+		\textcolor{accent}{\textbf{Risk-management read}}\\
+		LSTM is the strongest warning signal: it catches almost all stress weeks and leaves the fewest missed crises.
+	\end{columns}
+\end{frame}
+
+\begin{frame}{Portfolio impact: drawdown reduction}
+	\begin{columns}[T,onlytextwidth]
+		\column{0.66\textwidth}
+		\vspace{-0.6em}
+		\includegraphics[width=\textwidth,height=0.74\textheight,keepaspectratio]{figures/13_risk_managed_equity_curve.pdf}
+
+		\column{0.32\textwidth}
+		\textbf{Backtest summary}
+		\vspace{0.3em}
+
+		\tiny
+		\begin{tabular}{lrr}
+			\toprule
+			Strategy           & Wealth        & Max DD           \\
+			\midrule
+			Buy \& hold MXUS   & 2.86          & -55.2\%          \\
+			GAN discriminator  & 6.86          & -27.5\%          \\
+			GAN reconstruction & \textbf{7.18} & -17.5\%          \\
+			VAE reconstruction & 5.21          & -17.6\%          \\
+			LSTM autoencoder   & 1.87          & \textbf{-13.0\%} \\
+			\bottomrule
+		\end{tabular}
+
+		\vspace{0.6em}
+		\small
+		\begin{itemize}
+			\item GAN reconstruction: strongest wealth path.
+			\item LSTM: deepest drawdown control.
+		\end{itemize}
+	\end{columns}
 \end{frame}
 
 \end{document}
