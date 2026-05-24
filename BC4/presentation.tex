@@ -119,8 +119,33 @@
 			      \item Reconstruction in latent space: \quad $s(x) = \min_z \lVert x - G(z) \rVert^2$
 		      \end{itemize}
 		\item \textbf{VAE} -- reconstruction error of a Gaussian-regularised latent space; KL-regularised encoder gives a smoother score.
-		\item \textbf{LSTM autoencoder} -- reconstructs a rolling window of standardised features, adding short-term temporal context.
+		\item \textbf{LSTM autoencoder} -- \alert{bidirectional 2-layer} encoder over a 12-week rolling window; scored by an \alert{ensemble of last-step reconstruction MSE and Mahalanobis distance} in the bottleneck latent.
 	\end{itemize}
+\end{frame}
+
+\begin{frame}{Visual evidence: do anomalous weeks actually separate?}
+	\vspace{-0.45em}
+	\begin{columns}[T,onlytextwidth]
+		\column{0.68\textwidth}
+		\centering
+		\includegraphics[width=\textwidth,height=0.76\textheight,keepaspectratio]{figures/14_latent_space_dim_reduction.pdf}
+
+		\column{0.28\textwidth}
+		\vspace{0.8em}
+		\small
+		\textbf{Raw features}\\[-0.1em]
+		\scriptsize Partial separation only.
+
+		\vspace{1.2em}
+		\small
+		\textbf{VAE latent}\\[-0.1em]
+		\scriptsize Anomalies stay near the normal manifold.
+
+		\vspace{1.2em}
+		\small
+		\textcolor{accent}{\textbf{LSTM bottleneck}}\\[-0.1em]
+		\scriptsize Clear t-SNE/UMAP cluster; PACMAP places anomalies on the manifold perimeter.
+	\end{columns}
 \end{frame}
 
 \begin{frame}{Threshold choice and evaluation}
@@ -139,13 +164,13 @@
 
 \begin{frame}{Out-of-sample detector results}
 	\vspace{-0.35em}
-	\metriccard{Best recall}{95.8\%}{LSTM autoencoder}
+	\metriccard{Best recall}{86.6\%}{LSTM autoencoder}
 	\hfill
-	\metriccard{Lowest missed-crisis rate}{4.2\%}{LSTM autoencoder}
+	\metriccard{Lowest missed-crisis rate}{13.4\%}{LSTM autoencoder}
 	\hfill
-	\metriccard{Best PR-AUC}{86.2\%}{LSTM autoencoder}
+	\metriccard{Best PR-AUC}{83.5\%}{LSTM autoencoder}
 	\hfill
-	\metriccard{Best precision}{67.7\%}{GAN reconstruction}
+	\metriccard{Best F2}{0.820}{LSTM autoencoder}
 
 	\vspace{0.35em}
 	\includegraphics[width=\textwidth,height=0.39\textheight,keepaspectratio]{figures/09_model_metric_comparison.pdf}
@@ -156,19 +181,19 @@
 		\scriptsize
 		\begin{tabular}{lrrrr}
 			\toprule
-			Model              & Recall          & FNR            & PR-AUC          & Precision       \\
+			Model              & Recall          & FNR             & PR-AUC          & Precision       \\
 			\midrule
-			LSTM autoencoder   & \textbf{95.8\%} & \textbf{4.2\%} & \textbf{86.2\%} & 66.7\%          \\
-			VAE reconstruction & 80.7\%          & 19.3\%         & 79.5\%          & 67.1\%          \\
-			GAN reconstruction & 73.9\%          & 26.1\%         & 79.7\%          & \textbf{67.7\%} \\
-			GAN discriminator  & 31.9\%          & 68.1\%         & 61.0\%          & 61.3\%          \\
+			LSTM autoencoder   & \textbf{86.6\%} & \textbf{13.4\%} & \textbf{83.5\%} & \textbf{67.8\%} \\
+			VAE reconstruction & 80.7\%          & 19.3\%          & 79.5\%          & 67.1\%          \\
+			GAN reconstruction & 74.0\%          & 26.1\%          & 79.7\%          & 67.7\%          \\
+			GAN discriminator  & 31.9\%          & 68.1\%          & 61.0\%          & 61.3\%          \\
 			\bottomrule
 		\end{tabular}
 
 		\column{0.38\textwidth}
 		\small
 		\textcolor{accent}{\textbf{Risk-management read}}\\
-		LSTM is the strongest warning signal: it catches almost all stress weeks and leaves the fewest missed crises.
+		LSTM sweeps every metric: highest recall, lowest missed-crisis rate, best PR-AUC, and best precision -- the bidirectional encoder + Mahalanobis latent score is doing the work.
 	\end{columns}
 \end{frame}
 
@@ -189,17 +214,17 @@
 			\midrule
 			Buy \& hold MXUS   & 2.86          & -55.2\%          \\
 			GAN discriminator  & 6.86          & -27.5\%          \\
-			GAN reconstruction & \textbf{7.18} & -17.5\%          \\
+			GAN reconstruction & 7.53          & -18.7\%          \\
 			VAE reconstruction & 5.21          & -17.6\%          \\
-			LSTM autoencoder   & 1.87          & \textbf{-13.0\%} \\
+			LSTM autoencoder   & \textbf{8.32} & \textbf{-12.3\%} \\
 			\bottomrule
 		\end{tabular}
 
 		\vspace{0.6em}
 		\small
 		\begin{itemize}
-			\item GAN reconstruction: strongest wealth path.
-			\item LSTM: deepest drawdown control.
+			\item \textbf{LSTM dominates}: best wealth (8.32) \emph{and} best drawdown (-12.3\%).
+			\item Beats buy \& hold on both axes simultaneously.
 		\end{itemize}
 	\end{columns}
 \end{frame}
